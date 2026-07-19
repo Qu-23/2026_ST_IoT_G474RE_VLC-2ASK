@@ -1,0 +1,2 @@
+# 2026_ST_IoT_G474RE_VLC-2ASK
+2026年嵌赛应用赛道ST方向IoT赛题作品。基于NUCLEO-G474RE主控平台的VLC-2ASK照明通信一体化智联感知IoT系统
