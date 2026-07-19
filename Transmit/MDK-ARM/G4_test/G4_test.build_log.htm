@@ -22,21 +22,22 @@ Dialog DLL:      TCM.DLL V1.56.1.0
  
 <h2>Project:</h2>
 C:\Users\kafel\Desktop\PROJ_EX\26嵌赛 应用赛道\MAIN CODE - DEMO\Transmit\MDK-ARM\G4_test.uvprojx
-Project File Date:  07/15/2026
+Project File Date:  07/17/2026
 
 <h2>Output:</h2>
 *** Using Compiler 'V5.06 update 7 (build 960)', folder: 'E:\keil_v5\ARM\ARM_Compiler_5.06u7\Bin'
 Build target 'G4_test'
 compiling ask_tx.c...
-compiling tim.c...
 compiling main.c...
+../Core/Inc/usart.h(57): warning:  #1-D: last line of file ends without a newline
+  #endif /* __USART_H__ */
 ../Core/Src/main.c(82): warning:  #177-D: variable "audio_last_send_tick"  was declared but never referenced
   static uint32_t audio_last_send_tick = 0;
-../Core/Src/main.c: 1 warning, 0 errors
+../Core/Src/main.c: 2 warnings, 0 errors
 linking...
-Program Size: Code=20308 RO-data=860 RW-data=40 ZI-data=2768  
+Program Size: Code=22980 RO-data=860 RW-data=40 ZI-data=3008  
 FromELF: creating hex file...
-"G4_test\G4_test.axf" - 0 Error(s), 1 Warning(s).
+"G4_test\G4_test.axf" - 0 Error(s), 2 Warning(s).
 
 <h2>Software Packages used:</h2>
 
@@ -59,7 +60,7 @@ Package Vendor: Keil
 
    * Component: ARM::CMSIS:CORE:5.6.0
       Include file:  CMSIS/Core/Include/tz_context.h
-Build Time Elapsed:  00:00:06
+Build Time Elapsed:  00:00:05
 </pre>
 </body>
 </html>

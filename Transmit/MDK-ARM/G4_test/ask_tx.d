@@ -40,3 +40,4 @@ g4_test\ask_tx.o: ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart.h
 g4_test\ask_tx.o: ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h
 g4_test\ask_tx.o: ../Core/Inc/ask_protocol.h
 g4_test\ask_tx.o: E:\keil_v5\ARM\ARM_Compiler_5.06u7\Bin\..\include\string.h
+g4_test\ask_tx.o: E:\keil_v5\ARM\ARM_Compiler_5.06u7\Bin\..\include\stdio.h

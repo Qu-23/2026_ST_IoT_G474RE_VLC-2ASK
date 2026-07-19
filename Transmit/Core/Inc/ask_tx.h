@@ -26,8 +26,9 @@ extern "C" {
 /*============================================================================*
  *                              Bit FIFO                                      *
  *============================================================================*/
-/* FIFO depth in bits. Must hold a complete frame + slack. */
-#define ASK_TX_FIFO_BITS    (8 * (4 + ASK_MAX_PAYLOAD + 2) + 32)  /* ~1.7 kbit */
+/* FIFO depth in bits. Must hold a complete frame (Manchester-encoded) + slack.
+ * GAP(16) not encoded; all other fields Manchester-encoded (2x bits). */
+#define ASK_TX_FIFO_BITS    (16 + 2*(8*ASK_SYNC_BYTES + 2*ASK_PREAMBLE_BITS + ASK_PREAMBLE_FILL_BITS + 8*(2 + ASK_MAX_PAYLOAD + 2)) + 128)  /* ~3.6 kbit */
 
 /**
   * @brief  Initialise the TX bit FIFO (call once at boot).
@@ -54,6 +55,11 @@ int   ASK_TX_SendFrame(uint8_t type, const uint8_t *payload, uint16_t len);
   * @brief  Number of bits currently waiting in the FIFO.
   */
 uint16_t ASK_TX_FIFO_Count(void);
+
+/**
+  * @brief  Clear FIFO (discard all pending bits).
+  */
+void ASK_TX_FIFO_Clear(void);
 
 /**
   * @brief  Pop one bit from the FIFO (called from TIM2 ISR @ 10 kHz).
