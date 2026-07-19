@@ -201,23 +201,27 @@ static void Draw_BizTitle(void)
 
 static void Draw_BizInfo(void)
 {
-    /* y=32~47: Type+Len 同行，白底 */
+    /* Adaptive wrapping: Type on y=32, Len on y=48.
+     * Splitting onto two lines avoids overflow when type string is long
+     * (e.g. "AUDIO"=5 chars) or LEN is 3 digits. Robust for all cases. */
     Lcd_fill(0, 32, 128, 48, WHITE);
     ShowStr("Type:", 0, 32, COLOR_BIZ_LABEL, WHITE);
     ShowStr(TypeStr(s_biz_type), 40, 32, TypeColor(s_biz_type), WHITE);
-    ShowStr("Len:", 72, 32, COLOR_BIZ_LABEL, WHITE);
-    ShowNum(s_biz_len, 104, 32, COLOR_BIZ_VALUE, WHITE);
+
+    Lcd_fill(0, 48, 128, 64, WHITE);
+    ShowStr("Len:", 0, 48, COLOR_BIZ_LABEL, WHITE);
+    ShowNum(s_biz_len, 32, 48, COLOR_BIZ_VALUE, WHITE);
 }
 
 static void Draw_BizContent(void)
 {
-    /* y=48~111 白底内容区 */
-    Lcd_fill(0, 48, 128, 112, WHITE);
+    /* y=64~111 白底内容区 (y=32=Type, y=48=Len after adaptive wrap) */
+    Lcd_fill(0, 64, 128, 112, WHITE);
 
     if (!s_biz_has_data || s_biz_len == 0)
     {
-        ShowStr("Waiting", 36, 72, COLOR_BIZ_LABEL, WHITE);
-        ShowChar(s_anim_chars[s_anim_idx], 84, 72, COLOR_BIZ_VALUE, WHITE);
+        ShowStr("Waiting", 36, 80, COLOR_BIZ_LABEL, WHITE);
+        ShowChar(s_anim_chars[s_anim_idx], 84, 80, COLOR_BIZ_VALUE, WHITE);
         return;
     }
 
@@ -225,29 +229,34 @@ static void Draw_BizContent(void)
 
     if (s_biz_type == ASK_TYPE_TEXT)
     {
+        /* TEXT: 16 chars/row, 3 rows (y=64,80,96) = 48 chars */
         int row = 0, col = 0;
-        for (int i = 0; i < show_len && row < 4; i++)
+        for (int i = 0; i < show_len && row < 3; i++)
         {
             char c = (char)s_biz_payload[i];
             if (c < 32 || c > 126) c = '.';
-            ShowChar(c, col * 8, 48 + row * 16, COLOR_BIZ_VALUE, WHITE);
+            ShowChar(c, col * 8, 64 + row * 16, COLOR_BIZ_VALUE, WHITE);
             col++;
             if (col >= 16) { col = 0; row++; }
         }
     }
     else
     {
-        /* RAW/GRAPHIC/AUDIO: hex dump with "0x" prefix, 5 bytes/row (24px each = 120px) */
+        /* RAW/GRAPHIC/AUDIO: hex dump with "0x" prefix.
+         * "0xHH" = 4 chars × 8px = 32px per byte, 4 bytes/row (4×32=128px).
+         * 3 rows (y=64,80,96) = 12 bytes total.
+         * Note: 24px spacing caused char overlap (next byte's '0' overwrote
+         * previous byte's 2nd hex digit), now fixed with 32px spacing. */
         int row = 0, col = 0;
-        for (int i = 0; i < show_len && row < 4; i++)
+        for (int i = 0; i < show_len && row < 3; i++)
         {
-            uint16_t x = (uint16_t)(col * 24);
-            uint16_t y = (uint16_t)(48 + row * 16);
+            uint16_t x = (uint16_t)(col * 32);
+            uint16_t y = (uint16_t)(64 + row * 16);
             ShowChar('0', x, y, COLOR_BIZ_VALUE, WHITE);
             ShowChar('x', x + 8, y, COLOR_BIZ_VALUE, WHITE);
             ShowHex2(s_biz_payload[i], x + 16, y, COLOR_BIZ_VALUE, WHITE);
             col++;
-            if (col >= 5) { col = 0; row++; }
+            if (col >= 4) { col = 0; row++; }
         }
     }
 }
@@ -282,8 +291,8 @@ static void Draw_Biz(void)
     }
     else if (!s_biz_has_data)
     {
-        /* 仅刷新动画字符 */
-        ShowChar(s_anim_chars[s_anim_idx], 84, 72, COLOR_BIZ_VALUE, WHITE);
+        /* 仅刷新动画字符 (y=80 matches Draw_BizContent waiting position) */
+        ShowChar(s_anim_chars[s_anim_idx], 84, 80, COLOR_BIZ_VALUE, WHITE);
     }
 }
 
