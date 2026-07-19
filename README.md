@@ -7,5 +7,5 @@
 -RX端主控：（DevEBox大越创新）STM32G474RCT6 + 1.44寸液晶屏
 -LAST UPDATE：2026.7.20
 
-# Acknowledgement 特别致谢
+## Acknowledgement 特别致谢
 Yong Zhang 张勇导师
