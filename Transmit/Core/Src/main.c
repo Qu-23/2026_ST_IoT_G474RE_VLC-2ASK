@@ -96,6 +96,82 @@ static void HandleAudioDemo(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/*============================================================================*
+ *                      UART command-line helpers                             *
+ *============================================================================*/
+
+/* Print command list (used at boot and on 'C' command) */
+static void PrintCommandList(void)
+{
+    printf("\r\n=== 2ASK TX Commands ===\r\n");
+    printf("H         Link check (reply OK-H)\r\n");
+    printf("R<data>   RAW frame (ASCII payload, e.g. RHello)\r\n");
+    printf("R0x..     RAW frame, HEX bytes  (e.g. R0xAABBCC)\r\n");
+    printf("R0b..     RAW frame, BIN bits   (e.g. R0b01010101)\r\n");
+    printf("T<string> TEXT frame\r\n");
+    printf("V         Scope test frame (payload=0x55)\r\n");
+    printf("C         Show this command list\r\n");
+    printf("========================\r\n");
+}
+
+/* Parse hex string "AABBCC" -> bytes {0xAA,0xBB,0xCC}.
+ * Returns number of bytes parsed (0 on error / empty). */
+static uint16_t ParseHexBytes(const char *s, uint8_t *out, uint16_t max)
+{
+    uint16_t n = 0;
+    while (s[0] && s[1] && n < max)
+    {
+        int hi = -1, lo = -1;
+        char c1 = s[0], c2 = s[1];
+        if (c1 >= '0' && c1 <= '9') hi = c1 - '0';
+        else if (c1 >= 'a' && c1 <= 'f') hi = c1 - 'a' + 10;
+        else if (c1 >= 'A' && c1 <= 'F') hi = c1 - 'A' + 10;
+        if (c2 >= '0' && c2 <= '9') lo = c2 - '0';
+        else if (c2 >= 'a' && c2 <= 'f') lo = c2 - 'a' + 10;
+        else if (c2 >= 'A' && c2 <= 'F') lo = c2 - 'A' + 10;
+        if (hi < 0 || lo < 0) break;            /* invalid char -> stop */
+        out[n++] = (uint8_t)((hi << 4) | lo);
+        s += 2;
+    }
+    return n;
+}
+
+/* Parse binary string "01010101" -> bytes {0x55}.
+ * Bits are packed MSB-first; trailing bits (<8) are dropped.
+ * Returns number of bytes parsed. */
+static uint16_t ParseBinBytes(const char *s, uint8_t *out, uint16_t max)
+{
+    uint16_t n = 0;
+    uint8_t  byte = 0;
+    uint8_t  bit_count = 0;
+    while (*s && n < max)
+    {
+        if (*s == '0' || *s == '1')
+        {
+            byte = (uint8_t)((byte << 1) | (*s - '0'));
+            if (++bit_count == 8)
+            {
+                out[n++] = byte;
+                byte = 0;
+                bit_count = 0;
+            }
+        }
+        /* silently skip non-binary chars (spaces, etc.) */
+        s++;
+    }
+    return n;
+}
+
+/* Print payload bytes as "Enc: 0xHH 0xHH ..." for answer-back verification */
+static void PrintEncodedBytes(const uint8_t *buf, uint16_t len)
+{
+    uint16_t i;
+    printf("Enc:");
+    for (i = 0; i < len; i++)
+        printf(" 0x%02X", buf[i]);
+    printf("\r\n");
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -158,7 +234,7 @@ int main(void)
 	// --- 启动 USART1 中断接收 ---
 	UART_ReceiveInit();
 
-	// --- Test UART TX: send startup message directly ---
+	// --- Test UART TX: send startup banner + command list ---
 	{
 		uint8_t msg[] = "TX START\r\n";
 		HAL_StatusTypeDef status = HAL_UART_Transmit(&hlpuart1, msg, sizeof(msg)-1, 1000);
@@ -171,6 +247,7 @@ int main(void)
 				HAL_Delay(200);
 			}
 		}
+		PrintCommandList();
 	}
 
   /* USER CODE END 2 */
@@ -329,13 +406,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 }
 
 /*---------------------------------------*/
-// --- UART command parser (Step 1 + Debug) ---
-//   H  -> show FIFO status
-//   Z  -> push raw 0x55 byte (debug)
-//   G  -> send GAP test pattern (48x0 + 48x1 + 48x0) for scope verification
-//   D  -> show frame encoding demo (no actual send)
-//   R<data> -> send RAW frame + show encoding
-//   T<string> -> send TEXT frame + show encoding
+// --- UART command parser ---
+//   H         -> link check (reply OK-H)
+//   R<data>   -> RAW frame, ASCII payload (e.g. RHello)
+//   R0x..     -> RAW frame, HEX bytes  (e.g. R0xAABBCC)
+//   R0b..     -> RAW frame, BIN bits   (e.g. R0b01010101)
+//   T<string> -> TEXT frame
+//   V         -> scope test frame (payload=0x55)
+//   C         -> show command list
 /*---------------------------------------------------------------------------*/
 static void ProcessCommand(char *line)
 {
@@ -347,119 +425,93 @@ static void ProcessCommand(char *line)
     {
     case 'H':
     case 'h':
-        /* Direct test: send without printf */
+        /* Link check: direct UART reply (no printf overhead) */
         HAL_UART_Transmit(&hlpuart1, (uint8_t *)"OK-H\r\n", 6, 1000);
-        break;
-
-    case 'Z':
-    case 'z':
-        ASK_TX_PushByte(0x55);
-        printf("Pushed raw byte 0x55 (01010101)\r\n");
-        break;
-
-    case 'G':
-    case 'g':
-        /* GAP test: 48 zero bits + 48 one bits + 48 zero bits
-         * Scope should show: 4.8ms OFF -> 4.8ms ON -> 4.8ms OFF */
-        {
-            uint16_t i;
-            ASK_TX_FIFO_Clear();
-            tx_frame_pending = 1;
-            for (i = 0; i < 48; i++) ASK_TX_PushByte(0x00);  /* 48 bytes of 0x00 = 384 zero bits */
-            for (i = 0; i < 48; i++) ASK_TX_PushByte(0xFF);  /* 48 bytes of 0xFF = 384 one bits */
-            for (i = 0; i < 48; i++) ASK_TX_PushByte(0x00);  /* 48 bytes of 0x00 = 384 zero bits */
-            printf("GAP test: 38.4ms OFF + 38.4ms ON + 38.4ms OFF\r\n");
-        }
-        break;
-
-    case 'D':
-    case 'd':
-        /* Demo: Show frame encoding without actually sending */
-        printf("\r\n=== Encoding Demo ===\r\n");
-        ASK_TX_PrintFrameDebug(ASK_TYPE_RAW, (const uint8_t *)"Hello", 5);
         break;
 
     case 'R':
     case 'r':
-        /* Send RAW frame */
-        if (arglen == 0) return;
-        if (arglen > ASK_MAX_PAYLOAD) arglen = ASK_MAX_PAYLOAD;
-        ASK_TX_FIFO_Clear();
-        if (ASK_TX_SendFrame(ASK_TYPE_RAW, (const uint8_t *)arg, (uint16_t)arglen) == 0)
+        /* RAW frame. Three payload formats:
+         *   R0x..  -> HEX bytes   (e.g. R0xAABBCC -> payload {0xAA,0xBB,0xCC})
+         *   R0b..  -> BIN bits    (e.g. R0b01010101 -> payload {0x55})
+         *   R<...> -> ASCII chars (e.g. RHello -> payload "Hello") */
         {
-            tx_frame_pending = 1;
-            printf("R%u OK\r\n", arglen);
+            uint8_t  payload_buf[ASK_MAX_PAYLOAD];
+            uint16_t plen = 0;
+
+            if (arglen == 0)
+            {
+                printf("R: empty payload (try R0x.. / R0b.. / R<text>)\r\n");
+                break;
+            }
+            if (arglen >= 2 && arg[0] == '0' && (arg[1] == 'x' || arg[1] == 'X'))
+            {
+                plen = ParseHexBytes(&arg[2], payload_buf, ASK_MAX_PAYLOAD);
+                if (plen == 0) { printf("R0x: invalid hex\r\n"); break; }
+            }
+            else if (arglen >= 2 && arg[0] == '0' && (arg[1] == 'b' || arg[1] == 'B'))
+            {
+                plen = ParseBinBytes(&arg[2], payload_buf, ASK_MAX_PAYLOAD);
+                if (plen == 0) { printf("R0b: need >=8 bits\r\n"); break; }
+            }
+            else
+            {
+                plen = (arglen > ASK_MAX_PAYLOAD) ? ASK_MAX_PAYLOAD : (uint16_t)arglen;
+                memcpy(payload_buf, arg, plen);
+            }
+
+            ASK_TX_FIFO_Clear();
+            if (ASK_TX_SendFrame(ASK_TYPE_RAW, payload_buf, plen) == 0)
+            {
+                tx_frame_pending = 1;
+                printf("R%u OK\r\n", plen);
+                PrintEncodedBytes(payload_buf, plen);
+            }
+            else
+                printf("R FULL\r\n");
         }
-        else
-            printf("R FULL\r\n");
         break;
 
     case 'T':
     case 't':
-        /* Send TEXT frame */
-        if (arglen == 0) return;
+        /* TEXT frame: payload is ASCII string */
+        if (arglen == 0) { printf("T: empty string\r\n"); break; }
         if (arglen > ASK_MAX_PAYLOAD) arglen = ASK_MAX_PAYLOAD;
         ASK_TX_FIFO_Clear();
         if (ASK_TX_SendFrame(ASK_TYPE_TEXT, (const uint8_t *)arg, (uint16_t)arglen) == 0)
         {
             tx_frame_pending = 1;
             printf("T%u OK\r\n", arglen);
+            PrintEncodedBytes((const uint8_t *)arg, (uint16_t)arglen);
         }
         else
             printf("T FULL\r\n");
         break;
 
-    case 'M':
-    case 'm':
-        /* Minimal frame test: 10x frame with 1-byte payload */
-        {
-            uint8_t n;
-            for (n = 0; n < 10; n++)
-            {
-                ASK_TX_FIFO_Clear();
-                tx_frame_pending = 1;
-                ASK_TX_SendFrame(ASK_TYPE_RAW, (const uint8_t *)"A", 1);
-                /* Wait for FIFO to drain (frame fully sent) before next */
-                while (ASK_TX_FIFO_Count() > 10) {}
-                HAL_Delay(500);  /* 500ms silence between frames */
-            }
-            printf("M x10 done\r\n");
-        }
-        break;
-
-    case 'F':
-    case 'f':
-        /* Frame header only test: 10x header (TYPE+LEN+CRC, no payload) */
-        {
-            uint8_t n;
-            for (n = 0; n < 10; n++)
-            {
-                ASK_TX_FIFO_Clear();
-                tx_frame_pending = 1;
-                ASK_TX_SendFrame(ASK_TYPE_RAW, NULL, 0);
-                while (ASK_TX_FIFO_Count() > 10) {}
-                HAL_Delay(1000);  /* 1s silence - verify long-term bit sync */
-            }
-            printf("F x10 done\r\n");
-        }
-        break;
-
     case 'V':
     case 'v':
-        /* Scope verify: send frame with payload 0x55
-         * 0x55 = 01010101 alternating pattern - any bit shift produces
-         * a different value, making PAY alignment errors clearly visible */
-        ASK_TX_FIFO_Clear();
-        tx_frame_pending = 1;
+        /* Scope verify: payload=0x55 (alternating bits, alignment errors visible) */
         {
             uint8_t v = 0x55;
-            ASK_TX_SendFrame(ASK_TYPE_RAW, &v, 1);
+            ASK_TX_FIFO_Clear();
+            tx_frame_pending = 1;
+            if (ASK_TX_SendFrame(ASK_TYPE_RAW, &v, 1) == 0)
+            {
+                printf("V OK\r\n");
+                PrintEncodedBytes(&v, 1);
+            }
+            else
+                printf("V FULL\r\n");
         }
-        printf("V: 0x55 sent\r\n");
+        break;
+
+    case 'C':
+    case 'c':
+        PrintCommandList();
         break;
 
     default:
-        printf("H Z G D R<data> T<string> M F V=scope\r\n");
+        printf("Unknown cmd. Input C for help.\r\n");
         break;
     }
 }

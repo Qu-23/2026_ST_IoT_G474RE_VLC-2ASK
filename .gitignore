@@ -1,0 +1,43 @@
+# =============================================================================
+# Keil MDK-ARM build artifacts
+# =============================================================================
+*.o
+*.crf
+*.d
+*.axf
+*.hex
+*.bin
+*.map
+*.lnp
+*.sct
+*.htm
+*.dep
+*.iex
+*.lst
+*.build_log.htm
+*.build_log*.htm
+build_log.htm
+
+# Keil user-specific options (keep .uvprojx project file, ignore user state)
+*.uvoptx
+*.uvguix.*
+*.scvd
+
+# =============================================================================
+# GCC / Makefile build artifacts (Transmit/Debug)
+# =============================================================================
+Debug/
+objects.list
+objects.mk
+sources.mk
+subdir.mk
+makefile
+
+# =============================================================================
+# Misc
+# =============================================================================
+*.bak
+*.log
+*.tmp
+~$*
+Thumbs.db
