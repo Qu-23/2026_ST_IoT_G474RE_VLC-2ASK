@@ -57,6 +57,7 @@ static uint8_t  s_biz_payload[BIZ_PAYLOAD_MAX];
 static uint8_t  s_biz_updated = 0;
 static uint32_t s_biz_frame_cnt = 0;
 static uint8_t  s_biz_has_data = 0;
+static uint8_t  s_biz_info_rows = 1;  /* 1=Type+Len same row, 2=Len wrapped to next line */
 
 /* 待机动画 */
 static uint8_t  s_anim_idx = 0;
@@ -201,22 +202,40 @@ static void Draw_BizTitle(void)
 
 static void Draw_BizInfo(void)
 {
-    /* Adaptive wrapping: Type on y=32, Len on y=48.
-     * Splitting onto two lines avoids overflow when type string is long
-     * (e.g. "AUDIO"=5 chars) or LEN is 3 digits. Robust for all cases. */
+    const char *type_str = TypeStr(s_biz_type);
+    uint8_t type_chars = (uint8_t)strlen(type_str);
+
+    /* LEN < 100 (≤2 digits): same row as Type (fits 128px even for AUDIO+2-digit)
+     * LEN >= 100 (3 digits): wrap Len to y=48 to avoid overflow */
+    s_biz_info_rows = (s_biz_len >= 100) ? 2 : 1;
+
     Lcd_fill(0, 32, 128, 48, WHITE);
     ShowStr("Type:", 0, 32, COLOR_BIZ_LABEL, WHITE);
-    ShowStr(TypeStr(s_biz_type), 40, 32, TypeColor(s_biz_type), WHITE);
+    ShowStr(type_str, 40, 32, TypeColor(s_biz_type), WHITE);
 
-    Lcd_fill(0, 48, 128, 64, WHITE);
-    ShowStr("Len:", 0, 48, COLOR_BIZ_LABEL, WHITE);
-    ShowNum(s_biz_len, 32, 48, COLOR_BIZ_VALUE, WHITE);
+    if (s_biz_info_rows == 1)
+    {
+        /* Len on same row, right after TypeStr */
+        uint16_t len_x = (uint16_t)(40 + type_chars * 8);
+        ShowStr("Len:", len_x, 32, COLOR_BIZ_LABEL, WHITE);
+        ShowNum(s_biz_len, len_x + 32, 32, COLOR_BIZ_VALUE, WHITE);
+    }
+    else
+    {
+        /* Len wrapped to y=48 */
+        Lcd_fill(0, 48, 128, 64, WHITE);
+        ShowStr("Len:", 0, 48, COLOR_BIZ_LABEL, WHITE);
+        ShowNum(s_biz_len, 32, 48, COLOR_BIZ_VALUE, WHITE);
+    }
 }
 
 static void Draw_BizContent(void)
 {
-    /* y=64~111 白底内容区 (y=32=Type, y=48=Len after adaptive wrap) */
-    Lcd_fill(0, 64, 128, 112, WHITE);
+    /* Content area: y=48 (Len same row, 4 rows) or y=64 (Len wrapped, 3 rows) */
+    uint16_t y_start = (s_biz_info_rows == 1) ? 48 : 64;
+    uint8_t  max_rows = (s_biz_info_rows == 1) ? 4 : 3;
+
+    Lcd_fill(0, y_start, 128, 112, WHITE);
 
     if (!s_biz_has_data || s_biz_len == 0)
     {
@@ -229,44 +248,52 @@ static void Draw_BizContent(void)
 
     if (s_biz_type == ASK_TYPE_TEXT)
     {
-        /* TEXT: 16 chars/row, 3 rows (y=64,80,96) = 48 chars */
+        /* TEXT: 16 chars/row */
         int row = 0, col = 0;
-        for (int i = 0; i < show_len && row < 3; i++)
+        for (int i = 0; i < show_len && row < max_rows; i++)
         {
             char c = (char)s_biz_payload[i];
             if (c < 32 || c > 126) c = '.';
-            ShowChar(c, col * 8, 64 + row * 16, COLOR_BIZ_VALUE, WHITE);
+            ShowChar(c, col * 8, y_start + row * 16, COLOR_BIZ_VALUE, WHITE);
             col++;
             if (col >= 16) { col = 0; row++; }
         }
     }
     else
     {
-        /* RAW/GRAPHIC/AUDIO: hex dump with "0x" prefix.
-         * "0xHH" = 4 chars × 8px = 32px per byte, 4 bytes/row (4×32=128px).
-         * 3 rows (y=64,80,96) = 12 bytes total.
-         * Note: 24px spacing caused char overlap (next byte's '0' overwrote
-         * previous byte's 2nd hex digit), now fixed with 32px spacing. */
+        /* RAW/GRAPHIC/AUDIO: hex dump.
+         * Format: "0xAA BB CC DD EE" - "0x" prefix once at line start,
+         * subsequent bytes separated by single space.
+         * Byte 0: '0''x'HH = 32px; Byte 1-4: ' 'HH = 24px each.
+         * Total: 32 + 4×24 = 128px → 5 bytes/row. */
         int row = 0, col = 0;
-        for (int i = 0; i < show_len && row < 3; i++)
+        uint16_t x = 0;
+        for (int i = 0; i < show_len && row < max_rows; i++)
         {
-            uint16_t x = (uint16_t)(col * 32);
-            uint16_t y = (uint16_t)(64 + row * 16);
-            ShowChar('0', x, y, COLOR_BIZ_VALUE, WHITE);
-            ShowChar('x', x + 8, y, COLOR_BIZ_VALUE, WHITE);
-            ShowHex2(s_biz_payload[i], x + 16, y, COLOR_BIZ_VALUE, WHITE);
+            uint16_t y = (uint16_t)(y_start + row * 16);
+            if (col == 0)
+            {
+                ShowChar('0', x, y, COLOR_BIZ_VALUE, WHITE);
+                ShowChar('x', x + 8, y, COLOR_BIZ_VALUE, WHITE);
+                x += 16;
+            }
+            else
+            {
+                x += 8;  /* space separator */
+            }
+            ShowHex2(s_biz_payload[i], x, y, COLOR_BIZ_VALUE, WHITE);
+            x += 16;
             col++;
-            if (col >= 4) { col = 0; row++; }
+            if (col >= 5) { col = 0; x = 0; row++; }
         }
     }
 }
 
 static void Draw_BizFooter(void)
 {
+    /* Footer: only [PA0]DBG hint, FRM counter hidden for cleaner look */
     Lcd_fill(0, 112, 128, 128, COLOR_TITLE_BG);
     ShowStr("[PA0]DBG", 4, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
-    ShowStr("FRM:", 72, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
-    ShowNum(s_biz_frame_cnt, 104, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
 }
 
 static void Draw_Biz(void)
@@ -286,7 +313,7 @@ static void Draw_Biz(void)
     {
         Draw_BizInfo();
         Draw_BizContent();
-        Draw_BizFooter();   /* frame_cnt moved to footer, refresh on new frame */
+        /* Footer is static now (FRM hidden), only drawn on force_redraw */
         s_biz_updated = 0;
     }
     else if (!s_biz_has_data)
