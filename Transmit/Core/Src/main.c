@@ -108,8 +108,9 @@ static void PrintCommandList(void)
     printf("R<data>   RAW frame (ASCII payload, e.g. RHello)\r\n");
     printf("R0x..     RAW frame, HEX bytes  (e.g. R0xAABBCC)\r\n");
     printf("R0b..     RAW frame, BIN bits   (e.g. R0b01010101)\r\n");
-    printf("T<string> TEXT frame\r\n");
+    printf("T<string> TEXT frame (ASCII)\r\n");
     printf("V         Scope test frame (payload=0x55)\r\n");
+    printf("M<n>      Send predefined GB2312 Chinese TEXT frame (n=1..5)\r\n");
     printf("C         Show this command list\r\n");
     printf("========================\r\n");
 }
@@ -171,6 +172,26 @@ static void PrintEncodedBytes(const uint8_t *buf, uint16_t len)
         printf(" 0x%02X", buf[i]);
     printf("\r\n");
 }
+
+/*============================================================================*
+ *          Predefined GB2312 Chinese messages for M command                  *
+ *                                                                           *
+ * 串口工具以 UTF-8 发送汉字会变成 3 字节/字，而 RX 端字库用 GB2312（2 字节/字）。
+ * 这里在源码中用 GB2312 转义序列预定义，通过 M 命令发送即可避免编码错位。       *
+ * 选字范围限于 RX 端 31 字字库（光通信可见接收发送号链路正常异文本图像音频    *
+ * 调试待机数据帧错对率）。                                                   *
+ *============================================================================*/
+static const uint8_t msg_zh1[] = "\xB9\xE2\xCD\xA8\xD0\xC5";             /* 光通信 */
+static const uint8_t msg_zh2[] = "\xBD\xD3\xCA\xD5\xD5\xFD\xB3\xA3";     /* 接收正常 */
+static const uint8_t msg_zh3[] = "\xB7\xA2\xCB\xCD\xCA\xFD\xBE\xDD";     /* 发送数据 */
+static const uint8_t msg_zh4[] = "\xC1\xB4\xC2\xB7\xD5\xFD\xB3\xA3";     /* 链路正常 */
+static const uint8_t msg_zh5[] = "\xB5\xF7\xCA\xD4\xBF\xC9\xBC\xFB";     /* 调试可见 */
+
+static const uint8_t *const msg_zh_table[] = { msg_zh1, msg_zh2, msg_zh3, msg_zh4, msg_zh5 };
+static const uint16_t  msg_zh_len[]   = { sizeof(msg_zh1)-1, sizeof(msg_zh2)-1,
+                                          sizeof(msg_zh3)-1, sizeof(msg_zh4)-1,
+                                          sizeof(msg_zh5)-1 };
+#define MSG_ZH_COUNT  (sizeof(msg_zh_table) / sizeof(msg_zh_table[0]))
 
 /* USER CODE END 0 */
 
@@ -411,8 +432,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 //   R<data>   -> RAW frame, ASCII payload (e.g. RHello)
 //   R0x..     -> RAW frame, HEX bytes  (e.g. R0xAABBCC)
 //   R0b..     -> RAW frame, BIN bits   (e.g. R0b01010101)
-//   T<string> -> TEXT frame
+//   T<string> -> TEXT frame (ASCII)
 //   V         -> scope test frame (payload=0x55)
+//   M<n>      -> predefined GB2312 Chinese TEXT frame (n=1..5)
 //   C         -> show command list
 /*---------------------------------------------------------------------------*/
 static void ProcessCommand(char *line)
@@ -502,6 +524,47 @@ static void ProcessCommand(char *line)
             }
             else
                 printf("V FULL\r\n");
+        }
+        break;
+
+    case 'M':
+    case 'm':
+        /* Send predefined GB2312 Chinese text frame.
+         *   M1..M5 -> send msg_zh1..msg_zh5
+         *   M / M0 / M? -> list available messages */
+        {
+            uint8_t idx = 0;
+            uint8_t valid = 0;
+            if (arglen > 0 && arg[0] >= '0' && arg[0] <= '9')
+            {
+                idx = (uint8_t)(arg[0] - '0');
+                valid = 1;
+            }
+
+            if (!valid || idx == 0 || idx > MSG_ZH_COUNT)
+            {
+                printf("M: predefined GB2312 messages\r\n");
+                printf("  M1 = Guang Tong Xin      (6B)\r\n");
+                printf("  M2 = Jie Shou Zheng Chang(8B)\r\n");
+                printf("  M3 = Fa Song Shu Ju      (8B)\r\n");
+                printf("  M4 = Lian Lu Zheng Chang (8B)\r\n");
+                printf("  M5 = Tiao Shi Ke Jian    (8B)\r\n");
+                break;
+            }
+
+            {
+                const uint8_t *msg = msg_zh_table[idx - 1];
+                uint16_t       mlen = msg_zh_len[idx - 1];
+                ASK_TX_FIFO_Clear();
+                if (ASK_TX_SendFrame(ASK_TYPE_TEXT, msg, mlen) == 0)
+                {
+                    tx_frame_pending = 1;
+                    printf("M%u OK %u bytes\r\n", idx, mlen);
+                    PrintEncodedBytes(msg, mlen);
+                }
+                else
+                    printf("M%u FULL\r\n", idx);
+            }
         }
         break;
 

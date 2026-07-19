@@ -698,11 +698,12 @@ void LCDDisplay_Init(void)
         if (need_prog)
         {
             ShowStr("Font Prog...", 8, 112, COLOR_ERR, WHITE);
-            HAL_Delay(200);
+            HAL_Delay(700);
         }
         else
         {
             ShowStr("Font Load...", 8, 112, COLOR_OK, WHITE);
+            HAL_Delay(700);
         }
 
         FlashFont_Init();
