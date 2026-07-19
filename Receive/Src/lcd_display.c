@@ -15,6 +15,7 @@
 #include "signal_processor.h"
 #include "Lcd_Driver.h"
 #include "GUI.h"
+#include "SPI_FLASH.h"
 #include <string.h>
 
 /*============================================================================*
@@ -46,7 +47,9 @@
  *============================================================================*/
 #define MODE_BIZ    0
 #define MODE_DBG    1
+#define MODE_HZ     2   /* 隐藏汉字测试模式，PA1进入 */
 static uint8_t  s_mode = MODE_BIZ;
+static uint8_t  s_mode_prev = MODE_BIZ;   /* 进入HZ前的模式，用于PA1退出恢复 */
 static uint8_t  s_force_redraw = 1;
 
 /* 业务模式数据 */
@@ -138,23 +141,23 @@ static void Draw_LinkBar(void)
     if (!s_link_changed && !s_force_redraw)
         return;
 
-    /* Background matches current mode: BIZ=white, DBG=black.
-     * Avoids the jarring black bar on the white BIZ screen. */
-    bar_bg = (s_mode == MODE_BIZ) ? WHITE : BLACK;
+    /* Background matches current mode: BIZ/HZ=white, DBG=black.
+     * Avoids the jarring black bar on the white BIZ/HZ screen. */
+    bar_bg = (s_mode == MODE_DBG) ? BLACK : WHITE;
 
     if (s_link_ok)
     {
         led_color  = COLOR_OK;     /* green LED */
         text       = "LINK OK";
-        /* BIZ white bg: use dark text (green has low contrast on white);
+        /* BIZ/HZ white bg: use dark text (green has low contrast on white);
          * DBG black bg: use bright green text */
-        text_color = (s_mode == MODE_BIZ) ? COLOR_BIZ_VALUE : COLOR_OK;
+        text_color = (s_mode == MODE_DBG) ? COLOR_OK : COLOR_BIZ_VALUE;
     }
     else
     {
         led_color  = COLOR_ERR;    /* red LED */
         text       = "NO SIG";
-        text_color = (s_mode == MODE_BIZ) ? COLOR_BIZ_VALUE : COLOR_ERR;
+        text_color = (s_mode == MODE_DBG) ? COLOR_ERR : COLOR_BIZ_VALUE;
     }
 
     /* Clear status bar background */
@@ -420,11 +423,92 @@ static void Draw_Dbg(const SignalStats_t *s)
 }
 
 /*============================================================================*
+ *                          汉字测试模式（隐藏，PA1进入）                    *
+ *============================================================================*/
+/* GB2312转义序列避免源文件编码问题。每行8字×16px=128px，共31字分4行(8/8/8/7) */
+static const uint8_t hz_line1[] = "\xB9\xE2\xCD\xA8\xD0\xC5\xBF\xC9\xBC\xFB\xBD\xD3\xCA\xD5\xB7\xA2"; /* 光通信可见接收发 */
+static const uint8_t hz_line2[] = "\xCB\xCD\xBA\xC5\xC1\xB4\xC2\xB7\xD5\xFD\xB3\xA3\xD2\xEC\xCE\xC4"; /* 送号链路正常异文 */
+static const uint8_t hz_line3[] = "\xB1\xBE\xCD\xBC\xCF\xF1\xD2\xF4\xC6\xB5\xB5\xF7\xCA\xD4\xB4\xFD"; /* 本图像音频调试待 */
+static const uint8_t hz_line4[] = "\xBB\xFA\xCA\xFD\xBE\xDD\xD6\xA1\xB4\xED\xB6\xD4\xC2\xCA";         /* 机数据帧错对率 */
+
+static void Draw_HzTitle(void)
+{
+    Lcd_fill(0, 0, 128, 16, COLOR_TITLE_BG);
+    ShowStr("[PA1]EXIT", 4, 0, COLOR_TITLE_FG, COLOR_TITLE_BG);
+}
+
+static void Draw_HzFooter(void)
+{
+    Lcd_fill(0, 112, 128, 128, COLOR_TITLE_BG);
+    ShowStr("HZ TEST", 4, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
+}
+
+static void Draw_HzContent(void)
+{
+    Lcd_fill(0, 32, 128, 112, WHITE);
+    Gui_DrawFont_F16(0, 32, COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line1);
+    Gui_DrawFont_F16(0, 48, COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line2);
+    Gui_DrawFont_F16(0, 64, COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line3);
+    Gui_DrawFont_F16(0, 80, COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line4);
+}
+
+static void Draw_Hz(void)
+{
+    if (s_force_redraw)
+    {
+        Draw_HzTitle();
+        Draw_HzFooter();
+        Draw_HzContent();
+    }
+    Draw_LinkBar();
+    if (s_force_redraw)
+        s_force_redraw = 0;
+}
+
+/*============================================================================*
  *                          公共接口                                          *
  *============================================================================*/
 void LCDDisplay_Init(void)
 {
     Lcd_Init();
+
+    /* ===== 启动加载动画界面（含W25Q16硬件检测）===== */
+    Lcd_Clear(WHITE);
+
+    /* 标题栏 */
+    Lcd_fill(0, 0, 128, 16, COLOR_TITLE_BG);
+    ShowStr("2ASK RX Boot", 4, 0, COLOR_TITLE_FG, COLOR_TITLE_BG);
+
+    /* "Loading" + 旋转动画 |/-\ */
+    ShowStr("Loading", 32, 48, COLOR_BIZ_VALUE, WHITE);
+    const char anim[] = "|/-\\";
+    for (int i = 0; i < 12; i++)
+    {
+        ShowChar(anim[i % 4], 96, 48, COLOR_BIZ_VALUE, WHITE);
+        HAL_Delay(80);
+    }
+
+    /* 进度条 */
+    Lcd_fill(8, 70, 120, 80, GRAY2);    /* 边框 */
+    Lcd_fill(10, 72, 118, 78, WHITE);   /* 内部白底 */
+    for (int i = 0; i <= 100; i += 5)
+    {
+        uint16_t fill_w = (uint16_t)(i * 108 / 100);
+        Lcd_fill(10, 72, (uint16_t)(10 + fill_w), 78, BLUE);
+        HAL_Delay(15);
+    }
+
+    /* W25Q16 ID 检测结果显示 */
+    ShowStr("Flash ID:", 8, 96, COLOR_BIZ_LABEL, WHITE);
+    ShowHex4(SPI_Flash_Type, 80, 96, COLOR_BIZ_VALUE, WHITE);
+    if (SPI_Flash_Type == 0xEF14)
+        ShowStr("W25Q16 OK", 8, 112, COLOR_OK, WHITE);
+    else
+        ShowStr("Flash NA", 8, 112, COLOR_ERR, WHITE);
+
+    HAL_Delay(800);  /* 让用户看清硬件检测结果 */
+
+    /* ===== 加载完成，进入BIZ模式 ===== */
     Lcd_Clear(BLACK);
     s_mode = MODE_BIZ;
     s_force_redraw = 1;
@@ -457,6 +541,8 @@ void LCDDisplay_Update(const SignalStats_t *stats)
         Draw_Biz();
     else if (s_mode == MODE_DBG)
         Draw_Dbg(stats);
+    else if (s_mode == MODE_HZ)
+        Draw_Hz();
 }
 
 void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len)
@@ -485,7 +571,8 @@ void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len)
 
 void LCDDisplay_Process(void)
 {
-    static uint8_t  last_btn = 1;
+    static uint8_t  last_btn0 = 1;
+    static uint8_t  last_btn1 = 1;
     static uint32_t last_tick = 0;
     uint32_t now = HAL_GetTick();
 
@@ -493,11 +580,32 @@ void LCDDisplay_Process(void)
         return;
     last_tick = now;
 
-    uint8_t btn = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0);
-    if (last_btn == 1 && btn == 0)
+    /* PA0: BIZ <-> DBG (仅在非HZ模式下生效，避免在HZ中误切换) */
+    uint8_t btn0 = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0);
+    if (last_btn0 == 1 && btn0 == 0)
     {
-        s_mode = !s_mode;
+        if (s_mode != MODE_HZ)
+        {
+            s_mode = (s_mode == MODE_BIZ) ? MODE_DBG : MODE_BIZ;
+            s_force_redraw = 1;
+        }
+    }
+    last_btn0 = btn0;
+
+    /* PA1: 进入/退出 HZ 汉字测试模式 */
+    uint8_t btn1 = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1);
+    if (last_btn1 == 1 && btn1 == 0)
+    {
+        if (s_mode == MODE_HZ)
+        {
+            s_mode = s_mode_prev;   /* 退出，恢复之前模式 */
+        }
+        else
+        {
+            s_mode_prev = s_mode;   /* 进入，保存当前模式 */
+            s_mode = MODE_HZ;
+        }
         s_force_redraw = 1;
     }
-    last_btn = btn;
+    last_btn1 = btn1;
 }

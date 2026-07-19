@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "signal_processor.h"
+#include "SPI_FLASH.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -96,6 +97,7 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_SPI2_Init();
+  MX_SPI3_Init();
   MX_ADC1_Init();
   MX_TIM3_Init();
   MX_USART1_UART_Init();
@@ -104,6 +106,7 @@ int main(void)
   /* Initialize LCD display and signal processor */
   LED_Init();
   Button_GPIO_Init();
+  SPI_Flash_init();   /* W25Q16 on SPI3 (PA15 CS) - 外部Flash字库 */
   SignalProcessor_Init();
   LCDDisplay_Init();
 
