@@ -16,6 +16,7 @@ extern "C" {
 
 /* Font count macros - 16x16 Chinese font enabled for demo */
 #define hz16_num 61
+#define hz16_ext_num 69
 #define hz24_num 0
 
 /* Font data declarations - defined in Font.c */
@@ -33,6 +34,7 @@ struct typFNT_GB242 {
 };
 
 extern const struct typFNT_GB162 hz16[];
+extern const struct typFNT_GB162 hz16_ext[];
 extern const struct typFNT_GB242 hz24[];
 
 #ifdef __cplusplus

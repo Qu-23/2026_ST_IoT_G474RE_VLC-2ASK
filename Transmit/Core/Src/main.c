@@ -110,7 +110,7 @@ static void PrintCommandList(void)
     printf("R0b..     RAW frame, BIN bits   (e.g. R0b01010101)\r\n");
     printf("T<string> TEXT frame (ASCII + UTF-8 Chinese, auto GB2312)\r\n");
     printf("V         Scope test frame (payload=0x55)\r\n");
-    printf("M<n>      Send predefined GB2312 Chinese TEXT frame (n=1..5)\r\n");
+    printf("M<string> Chinese TEXT frame (same as T, for Chinese input)\r\n");
     printf("C         Show this command list\r\n");
     printf("========================\r\n");
 }
@@ -174,33 +174,15 @@ static void PrintEncodedBytes(const uint8_t *buf, uint16_t len)
 }
 
 /*============================================================================*
- *          Predefined GB2312 Chinese messages for M command                  *
- *                                                                           *
- * 串口工具以 UTF-8 发送汉字会变成 3 字节/字，而 RX 端字库用 GB2312（2 字节/字）。
- * 这里在源码中用 GB2312 转义序列预定义，通过 M 命令发送即可避免编码错位。       *
- * 选字范围限于 RX 端 31 字字库（光通信可见接收发送号链路正常异文本图像音频    *
- * 调试待机数据帧错对率）。                                                   *
- *============================================================================*/
-static const uint8_t msg_zh1[] = "\xB9\xE2\xCD\xA8\xD0\xC5";             /* 光通信 */
-static const uint8_t msg_zh2[] = "\xBD\xD3\xCA\xD5\xD5\xFD\xB3\xA3";     /* 接收正常 */
-static const uint8_t msg_zh3[] = "\xB7\xA2\xCB\xCD\xCA\xFD\xBE\xDD";     /* 发送数据 */
-static const uint8_t msg_zh4[] = "\xC1\xB4\xC2\xB7\xD5\xFD\xB3\xA3";     /* 链路正常 */
-static const uint8_t msg_zh5[] = "\xB5\xF7\xCA\xD4\xBF\xC9\xBC\xFB";     /* 调试可见 */
-
-static const uint8_t *const msg_zh_table[] = { msg_zh1, msg_zh2, msg_zh3, msg_zh4, msg_zh5 };
-static const uint16_t  msg_zh_len[]   = { sizeof(msg_zh1)-1, sizeof(msg_zh2)-1,
-                                          sizeof(msg_zh3)-1, sizeof(msg_zh4)-1,
-                                          sizeof(msg_zh5)-1 };
-#define MSG_ZH_COUNT  (sizeof(msg_zh_table) / sizeof(msg_zh_table[0]))
-
-/*============================================================================*
  *          UTF-8 -> GB2312 transcoding for T command                         *
  *                                                                           *
  * 上位机串口工具默认 UTF-8 编码，每个汉字 3 字节；RX 端字库用 GB2312（2 字节）。
  * 这里在 TX 端自动把 UTF-8 汉字转成 GB2312 再发送，对上位机用户完全透明。
- * 映射表覆盖 RX 端 61 字字库（光通信可见接收发送号链路正常异文本图像音频
+ * 映射表覆盖 RX 端 130 字字库（光通信可见接收发送号链路正常异文本图像音频
  * 调试待机数据帧错对率 + 系统设备硬件版本功能显示状态传输误码稳定无线应用
- * 按键切换模式成），其它汉字会被替换为 '?'。                              *
+ * 按键切换模式成 + 嵌入式物联网处理算法协议编解感采集波特灵敏距离范围滤
+ * 放校验实时中断低耗节点终端服务演方案目标环境安全电子开关灯温湿源压流
+ * 识别有效优化停失度），其它汉字会被替换为 '?'。                          *
  *============================================================================*/
 typedef struct {
     uint8_t utf8[3];   /* UTF-8 编码（3 字节） */
@@ -270,6 +252,76 @@ static const utf8_gb_t utf8_gb_table[] = {
     {{0xE6,0xA8,0xA1},{0xC4,0xA3}},  /* 模 */
     {{0xE5,0xBC,0x8F},{0xCA,0xBD}},  /* 式 */
     {{0xE6,0x88,0x90},{0xB3,0xC9}},  /* 成 */
+    /* 69 新增字（嵌入式物联网处理算法协议编解感采集波特灵敏距离范围滤放校验实时中断低耗节点终端服务演方案目标环境安全电子开关灯温湿源压流识别有效优化停失度）*/
+    {{0xE5,0xB5,0x8C},{0xC7,0xB6}},  /* 嵌 */
+    {{0xE5,0x85,0xA5},{0xC8,0xEB}},  /* 入 */
+    {{0xE5,0xBC,0x8F},{0xCA,0xBD}},  /* 式 */
+    {{0xE7,0x89,0xA9},{0xCE,0xEF}},  /* 物 */
+    {{0xE8,0x81,0x94},{0xC1,0xAA}},  /* 联 */
+    {{0xE7,0xBD,0x91},{0xCD,0xF8}},  /* 网 */
+    {{0xE5,0xA4,0x84},{0xB4,0xA6}},  /* 处 */
+    {{0xE7,0x90,0x86},{0xC0,0xED}},  /* 理 */
+    {{0xE7,0xAE,0x97},{0xCB,0xE3}},  /* 算 */
+    {{0xE6,0xB3,0x95},{0xB7,0xA8}},  /* 法 */
+    {{0xE5,0x8D,0x8F},{0xD0,0xAD}},  /* 协 */
+    {{0xE8,0xAE,0xAE},{0xD2,0xE9}},  /* 议 */
+    {{0xE7,0xBC,0x96},{0xB1,0xE0}},  /* 编 */
+    {{0xE8,0xA7,0xA3},{0xBD,0xE2}},  /* 解 */
+    {{0xE6,0x84,0x9F},{0xB8,0xD0}},  /* 感 */
+    {{0xE9,0x87,0x87},{0xB2,0xC9}},  /* 采 */
+    {{0xE9,0x9B,0x86},{0xBC,0xAF}},  /* 集 */
+    {{0xE6,0xB3,0xA2},{0xB2,0xA8}},  /* 波 */
+    {{0xE7,0x89,0xB9},{0xCC,0xD8}},  /* 特 */
+    {{0xE7,0x81,0xB5},{0xC1,0xE9}},  /* 灵 */
+    {{0xE6,0x95,0x8F},{0xC3,0xF4}},  /* 敏 */
+    {{0xE8,0xB7,0x9D},{0xBE,0xE0}},  /* 距 */
+    {{0xE7,0xA6,0xBB},{0xC0,0xEB}},  /* 离 */
+    {{0xE8,0x8C,0x83},{0xB7,0xB6}},  /* 范 */
+    {{0xE5,0x9B,0xB4},{0xCE,0xA7}},  /* 围 */
+    {{0xE6,0xBB,0xA4},{0xC2,0xCB}},  /* 滤 */
+    {{0xE6,0x94,0xBE},{0xB7,0xC5}},  /* 放 */
+    {{0xE6,0xA0,0xA0},{0xD0,0xA3}},  /* 校 */
+    {{0xE9,0xAA,0x8C},{0xD1,0xE9}},  /* 验 */
+    {{0xE5,0xAE,0x9E},{0xCA,0xB5}},  /* 实 */
+    {{0xE6,0x97,0xB6},{0xCA,0xB1}},  /* 时 */
+    {{0xE4,0xB8,0xAD},{0xD6,0xD0}},  /* 中 */
+    {{0xE6,0x96,0xAD},{0xB6,0xCF}},  /* 断 */
+    {{0xE4,0xBD,0x8E},{0xB5,0xCD}},  /* 低 */
+    {{0xE8,0x80,0x97},{0xBA,0xC4}},  /* 耗 */
+    {{0xE8,0x8A,0x82},{0xBD,0xDA}},  /* 节 */
+    {{0xE7,0x82,0xB9},{0xB5,0xE3}},  /* 点 */
+    {{0xE7,0xBB,0x88},{0xD6,0xD5}},  /* 终 */
+    {{0xE7,0xAB,0xAF},{0xB6,0xCB}},  /* 端 */
+    {{0xE6,0x9C,0x8D},{0xB7,0xFE}},  /* 服 */
+    {{0xE5,0x8A,0xA1},{0xCE,0xF1}},  /* 务 */
+    {{0xE6,0xBC,0x94},{0xD1,0xDD}},  /* 演 */
+    {{0xE6,0x96,0xB9},{0xB7,0xBD}},  /* 方 */
+    {{0xE6,0xA1,0x88},{0xB0,0xB8}},  /* 案 */
+    {{0xE7,0x9B,0xAE},{0xC4,0xBF}},  /* 目 */
+    {{0xE6,0xA0,0x87},{0xB1,0xEA}},  /* 标 */
+    {{0xE7,0x8E,0xAF},{0xBB,0xB7}},  /* 环 */
+    {{0xE5,0xA2,0x83},{0xBE,0xB3}},  /* 境 */
+    {{0xE5,0xAE,0x89},{0xB0,0xB2}},  /* 安 */
+    {{0xE5,0x85,0xA8},{0xC8,0xAB}},  /* 全 */
+    {{0xE7,0x94,0xB5},{0xB5,0xE7}},  /* 电 */
+    {{0xE5,0xAD,0x90},{0xD7,0xD3}},  /* 子 */
+    {{0xE5,0xBC,0x80},{0xBF,0xAA}},  /* 开 */
+    {{0xE5,0x85,0xB3},{0xB9,0xD8}},  /* 关 */
+    {{0xE7,0x81,0xAF},{0xB5,0xC6}},  /* 灯 */
+    {{0xE6,0xB8,0xA9},{0xCE,0xC2}},  /* 温 */
+    {{0xE6,0xB9,0xBF},{0xCA,0xAA}},  /* 湿 */
+    {{0xE6,0xBA,0x90},{0xD4,0xB4}},  /* 源 */
+    {{0xE5,0x8E,0x8B},{0xD1,0xB9}},  /* 压 */
+    {{0xE6,0xB5,0x81},{0xC1,0xF7}},  /* 流 */
+    {{0xE8,0xAF,0x86},{0xCA,0xB6}},  /* 识 */
+    {{0xE5,0x88,0xAB},{0xB1,0xF0}},  /* 别 */
+    {{0xE6,0x9C,0x89},{0xD3,0xD0}},  /* 有 */
+    {{0xE6,0x95,0x88},{0xD0,0xA7}},  /* 效 */
+    {{0xE4,0xBC,0x98},{0xD3,0xC5}},  /* 优 */
+    {{0xE5,0x8C,0x96},{0xBB,0xAF}},  /* 化 */
+    {{0xE5,0x81,0x9C},{0xCD,0xA3}},  /* 停 */
+    {{0xE5,0xA4,0xB1},{0xCA,0xA7}},  /* 失 */
+    {{0xE5,0xBA,0xA6},{0xB6,0xC8}},  /* 度 */
 };
 #define UTF8_GB_TABLE_SIZE  (sizeof(utf8_gb_table) / sizeof(utf8_gb_table[0]))
 
@@ -569,9 +621,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 //   R<data>   -> RAW frame, ASCII payload (e.g. RHello)
 //   R0x..     -> RAW frame, HEX bytes  (e.g. R0xAABBCC)
 //   R0b..     -> RAW frame, BIN bits   (e.g. R0b01010101)
-//   T<string> -> TEXT frame (ASCII)
+//   T<string> -> TEXT frame (ASCII + UTF-8 Chinese, auto GB2312)
 //   V         -> scope test frame (payload=0x55)
-//   M<n>      -> predefined GB2312 Chinese TEXT frame (n=1..5)
+//   M<string> -> Chinese TEXT frame (same as T, for Chinese input)
 //   C         -> show command list
 /*---------------------------------------------------------------------------*/
 static void ProcessCommand(char *line)
@@ -673,42 +725,23 @@ static void ProcessCommand(char *line)
 
     case 'M':
     case 'm':
-        /* Send predefined GB2312 Chinese text frame.
-         *   M1..M5 -> send msg_zh1..msg_zh5
-         *   M / M0 / M? -> list available messages */
+        /* Chinese TEXT frame: same as T, auto UTF-8 → GB2312 transcoding.
+         * Provided as an alias for convenient Chinese input. */
+        if (arglen == 0) { printf("M: empty string\r\n"); break; }
         {
-            uint8_t idx = 0;
-            uint8_t valid = 0;
-            if (arglen > 0 && arg[0] >= '0' && arg[0] <= '9')
+            uint8_t  payload_buf[ASK_MAX_PAYLOAD];
+            uint16_t plen = TranscodeUTF8toGB2312(arg, (uint16_t)arglen,
+                                                   payload_buf, ASK_MAX_PAYLOAD);
+            if (plen == 0) { printf("M: transcode empty\r\n"); break; }
+            ASK_TX_FIFO_Clear();
+            if (ASK_TX_SendFrame(ASK_TYPE_TEXT, payload_buf, plen) == 0)
             {
-                idx = (uint8_t)(arg[0] - '0');
-                valid = 1;
+                tx_frame_pending = 1;
+                printf("M OK in=%u out=%u\r\n", (uint16_t)arglen, plen);
+                PrintEncodedBytes(payload_buf, plen);
             }
-
-            if (!valid || idx == 0 || idx > MSG_ZH_COUNT)
-            {
-                printf("M: predefined GB2312 messages\r\n");
-                printf("  M1 = Guang Tong Xin      (6B)\r\n");
-                printf("  M2 = Jie Shou Zheng Chang(8B)\r\n");
-                printf("  M3 = Fa Song Shu Ju      (8B)\r\n");
-                printf("  M4 = Lian Lu Zheng Chang (8B)\r\n");
-                printf("  M5 = Tiao Shi Ke Jian    (8B)\r\n");
-                break;
-            }
-
-            {
-                const uint8_t *msg = msg_zh_table[idx - 1];
-                uint16_t       mlen = msg_zh_len[idx - 1];
-                ASK_TX_FIFO_Clear();
-                if (ASK_TX_SendFrame(ASK_TYPE_TEXT, msg, mlen) == 0)
-                {
-                    tx_frame_pending = 1;
-                    printf("M%u OK %u bytes\r\n", idx, mlen);
-                    PrintEncodedBytes(msg, mlen);
-                }
-                else
-                    printf("M%u FULL\r\n", idx);
-            }
+            else
+                printf("M FULL\r\n");
         }
         break;
 

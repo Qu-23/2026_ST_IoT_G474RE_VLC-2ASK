@@ -18,6 +18,7 @@
 #include "Font.h"
 #include "SPI_FLASH.h"
 #include <string.h>
+#include <stdlib.h>
 
 /*============================================================================*
  *                          颜色定义                                          *
@@ -51,7 +52,8 @@
 #define MODE_HZ     2   /* 隐藏汉字测试模式，PA1进入 */
 static uint8_t  s_mode = MODE_BIZ;
 static uint8_t  s_mode_prev = MODE_BIZ;   /* 进入HZ前的模式，用于PA1退出恢复 */
-static uint8_t  s_hz_submode = 0;         /* HZ子模式: 0=片上字库, 1=FLASH字库 */
+static uint8_t  s_hz_page = 0;            /* HZ页码: 0=ONCHIP, 1+=FLASH分页 */
+#define HZ_PAGE_MAX  4                     /* 0:ONCHIP 1-3:FLASH(130字/56每页) */
 static uint8_t  s_force_redraw = 1;
 
 /* 业务模式数据 */
@@ -450,14 +452,14 @@ static void Draw_Dbg(const SignalStats_t *s)
  *   0x0000: 魔数 0xAA 0x55 (2字节) - 标识已烧录                            *
  *   0x0002: 字数 N (1字节)                                                *
  *   0x0010: 索引区 (N × 2字节 GB2312编码)                                 *
- *   0x0100: 数据区 (N × 32字节点阵数据)                                   *
- * 烧录内容来自 Font.c 中的 hz16[] 数组（片上字库同步到FLASH）              *
+ *   0x0200: 数据区 (N × 32字节点阵数据)                                   *
+ * 烧录内容来自 Font.c 中的 hz16[] + hz16_ext[] 数组                       *
  *============================================================================*/
 #define FLASH_FONT_MAGIC_ADDR   0x000000u
 #define FLASH_FONT_COUNT_ADDR   0x000002u
 #define FLASH_FONT_INDEX_ADDR   0x000010u
-#define FLASH_FONT_DATA_ADDR    0x000100u
-#define FLASH_FONT_MAX_COUNT    64u     /* 索引区最多64字=128字节，留足空间 */
+#define FLASH_FONT_DATA_ADDR    0x000200u
+#define FLASH_FONT_MAX_COUNT    128u    /* 130字=260字节索引，0x0200前空间充裕 */
 
 static uint8_t  flash_font_index[FLASH_FONT_MAX_COUNT * 2];  /* 索引区RAM缓存 */
 static uint8_t  flash_font_count = 0;                         /* 已烧录字数 */
@@ -470,41 +472,61 @@ static uint8_t FlashFont_IsProgrammed(void)
     return (buf[0] == 0xAA && buf[1] == 0x55);
 }
 
-/* 烧录 Font.c 中的 hz16[] 到 W25Q16（首次上电自动调用） */
+/* 烧录 Font.c 中的 hz16[] + hz16_ext[] 到 W25Q16 */
 static void FlashFont_Program(void)
 {
-    static uint8_t buf[1280];   /* 0x0100 + 31*32 = 1248字节，留余量 */
+    uint16_t total = hz16_num + hz16_ext_num;  /* 61 + 69 = 130 */
+    uint32_t buf_size = 0x0200u + (uint32_t)total * 32u + 32u;  /* 预留余量 */
+    uint8_t *buf = (uint8_t *)malloc(buf_size);
+    if (!buf) { flash_font_ready = 0; return; }
+
     uint16_t pos = 0;
     uint16_t i, j;
 
     /* 构建烧录数据 */
     buf[pos++] = 0xAA;          /* 魔数 */
     buf[pos++] = 0x55;
-    buf[pos++] = (uint8_t)hz16_num;  /* 字数 */
+    buf[pos++] = (uint8_t)total;  /* 总字数 */
     while (pos < 0x10) buf[pos++] = 0xFF;  /* 填充到索引区 */
 
-    /* 索引区：GB2312编码 */
+    /* 索引区：hz16 索引 */
     for (i = 0; i < hz16_num; i++)
     {
         buf[pos++] = hz16[i].Index[0];
         buf[pos++] = hz16[i].Index[1];
     }
-    while (pos < 0x100) buf[pos++] = 0xFF;  /* 填充到数据区 */
+    /* 索引区：hz16_ext 索引 */
+    for (i = 0; i < hz16_ext_num; i++)
+    {
+        buf[pos++] = hz16_ext[i].Index[0];
+        buf[pos++] = hz16_ext[i].Index[1];
+    }
+    while (pos < 0x200) buf[pos++] = 0xFF;  /* 填充到数据区 */
 
-    /* 数据区：32字节点阵 */
+    /* 数据区：hz16 点阵 */
     for (i = 0; i < hz16_num; i++)
     {
         for (j = 0; j < 32; j++)
             buf[pos++] = (uint8_t)hz16[i].Msk[j];
     }
+    /* 数据区：hz16_ext 点阵 */
+    for (i = 0; i < hz16_ext_num; i++)
+    {
+        for (j = 0; j < 32; j++)
+            buf[pos++] = (uint8_t)hz16_ext[i].Msk[j];
+    }
 
     /* 一次性写入（SPI_Flash_write 自动处理擦除和分页） */
     SPI_Flash_write(buf, 0, pos);
+    free(buf);
 }
 
-/* 初始化 FLASH 字库：检测→烧录→加载索引 */
+/* 初始化 FLASH 字库：检测→烧录→加载索引
+ * 若 FLASH 中字数与 hz16_num+hz16_ext_num 不一致，自动重烧录 */
 static void FlashFont_Init(void)
 {
+    uint16_t expected = hz16_num + hz16_ext_num;
+
     if (SPI_Flash_Type != 0xEF14)
     {
         flash_font_ready = 0;
@@ -514,6 +536,14 @@ static void FlashFont_Init(void)
     if (!FlashFont_IsProgrammed())
     {
         FlashFont_Program();
+    }
+    else
+    {
+        /* 已烧录但字数不匹配：版本升级需要重烧录 */
+        uint8_t stored_count = 0;
+        SPI_Flash_read(&stored_count, FLASH_FONT_COUNT_ADDR, 1);
+        if (stored_count != (uint8_t)expected)
+            FlashFont_Program();
     }
 
     /* 加载索引和字数到 RAM */
@@ -654,11 +684,14 @@ static void Draw_HzFooter(void)
 
 static void Draw_HzContent(void)
 {
-    /* 全屏 8 行汉字 y=0~127，第4行末尾(x=112)显示模式标识 C/F */
+    /* 全屏 7 行汉字 + 1 行状态栏
+     * Page 0: ONCHIP 61字 (从 hz_line1-8 渲染，第8行清空给状态栏)
+     * Page 1+: FLASH 分页，每页 56 字 (7行×8字) */
     Lcd_fill(0, 0, 128, 128, WHITE);
-    if (s_hz_submode == 0)
+
+    if (s_hz_page == 0)
     {
-        /* 片上字库：用 Gui_DrawFont_F16 渲染 */
+        /* ONCHIP 片上字库：用 Gui_DrawFont_F16 渲染 */
         Gui_DrawFont_F16(0, 0,   COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line1);
         Gui_DrawFont_F16(0, 16,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line2);
         Gui_DrawFont_F16(0, 32,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line3);
@@ -666,31 +699,60 @@ static void Draw_HzContent(void)
         Gui_DrawFont_F16(0, 64,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line5);
         Gui_DrawFont_F16(0, 80,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line6);
         Gui_DrawFont_F16(0, 96,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line7);
-        Gui_DrawFont_F16(0, 112, COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line8);
-        /* 第4行末尾(7字，x=112空闲)显示 C=ONCHIP */
-        ShowChar('C', 112, 48, COLOR_OK, WHITE);
+        /* 第8行(y=112)不画汉字，留给状态栏 */
+    }
+    else if (flash_font_ready)
+    {
+        /* FLASH 字库分页：每页 56 字 (7行)，从 W25Q16 索引读取 */
+        uint8_t page_start = (s_hz_page - 1) * 56;
+        uint8_t page_count = 56;
+        if (page_start >= flash_font_count) page_count = 0;
+        else if (page_start + page_count > flash_font_count)
+            page_count = flash_font_count - page_start;
+
+        if (page_count > 0)
+        {
+            uint8_t gb_str[113];  /* 56字 × 2字节 + 1终止符 */
+            uint8_t slen = 0;
+            for (uint8_t i = 0; i < page_count && slen < 112; i++)
+            {
+                uint8_t idx = page_start + i;
+                if (idx >= flash_font_count) break;
+                gb_str[slen++] = flash_font_index[idx * 2];
+                gb_str[slen++] = flash_font_index[idx * 2 + 1];
+            }
+            gb_str[slen] = 0;
+
+            FlashFont_DrawTextBlock(0, 0, gb_str, COLOR_BIZ_VALUE, WHITE, 128, 112);
+        }
     }
     else
     {
-        /* FLASH字库：从W25Q16读取渲染 */
-        if (flash_font_ready)
-        {
-            FlashFont_DrawString(0, 0,   hz_line1, COLOR_BIZ_VALUE, WHITE);
-            FlashFont_DrawString(0, 16,  hz_line2, COLOR_BIZ_VALUE, WHITE);
-            FlashFont_DrawString(0, 32,  hz_line3, COLOR_BIZ_VALUE, WHITE);
-            FlashFont_DrawString(0, 48,  hz_line4, COLOR_BIZ_VALUE, WHITE);
-            FlashFont_DrawString(0, 64,  hz_line5, COLOR_BIZ_VALUE, WHITE);
-            FlashFont_DrawString(0, 80,  hz_line6, COLOR_BIZ_VALUE, WHITE);
-            FlashFont_DrawString(0, 96,  hz_line7, COLOR_BIZ_VALUE, WHITE);
-            FlashFont_DrawString(0, 112, hz_line8, COLOR_BIZ_VALUE, WHITE);
-            /* 第4行末尾显示 F=FLASH + 字数 */
-            ShowChar('F', 112, 48, COLOR_OK, WHITE);
-        }
-        else
-        {
-            ShowStr("Flash NA", 32, 64, COLOR_ERR, WHITE);
-        }
+        ShowStr("Flash NA", 24, 48, COLOR_ERR, WHITE);
     }
+
+    /* 第8行(y=112): 页码 + 字数 + K1翻页提示 */
+    Lcd_fill(0, 112, 128, 128, GRAY2);
+    char page_tag = (s_hz_page == 0) ? 'C' : 'F';
+    ShowChar(page_tag, 0, 112, WHITE, GRAY2);
+    ShowChar('0' + s_hz_page + 1, 8, 112, WHITE, GRAY2);
+    ShowChar('/', 16, 112, WHITE, GRAY2);
+    ShowChar('0' + HZ_PAGE_MAX, 24, 112, WHITE, GRAY2);
+    /* 字数统计 */
+    if (s_hz_page == 0)
+    {
+        ShowStr("N=56", 40, 112, WHITE, GRAY2);
+    }
+    else
+    {
+        uint8_t pn = (s_hz_page - 1) * 56;
+        uint8_t pc = 56;
+        if (pn + pc > flash_font_count) pc = flash_font_count - pn;
+        if (pn >= flash_font_count) pc = 0;
+        ShowStr("N=", 40, 112, WHITE, GRAY2);
+        ShowNum(pc, 56, 112, WHITE, GRAY2);
+    }
+    ShowStr("K1:FLIP", 80, 112, WHITE, GRAY2);
 }
 
 static void Draw_Hz(void)
@@ -746,10 +808,18 @@ void LCDDisplay_Init(void)
 
     HAL_Delay(600);  /* 让用户看清硬件检测结果 */
 
-    /* FLASH 字库初始化（首次自动烧录，后续直接加载索引） */
+    /* FLASH 字库初始化（首次自动烧录，字数变化时重烧录） */
     if (SPI_Flash_Type == 0xEF14)
     {
         uint8_t need_prog = !FlashFont_IsProgrammed();
+        /* 字数不匹配也需要重编程 */
+        if (!need_prog)
+        {
+            uint8_t stored = 0;
+            SPI_Flash_read(&stored, FLASH_FONT_COUNT_ADDR, 1);
+            if (stored != (uint8_t)(hz16_num + hz16_ext_num))
+                need_prog = 1;
+        }
         Lcd_fill(0, 112, 128, 128, WHITE);  /* 清除底部行 */
         if (need_prog)
         {
@@ -848,13 +918,13 @@ void LCDDisplay_Process(void)
         return;
     last_tick = now;
 
-    /* PA0: BIZ <-> DBG (非HZ模式) 或 HZ子模式切换(片上/FLASH字库) */
+    /* PA0: BIZ <-> DBG (非HZ模式) 或 HZ翻页 */
     uint8_t btn0 = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0);
     if (last_btn0 == 1 && btn0 == 0)
     {
         if (s_mode == MODE_HZ)
         {
-            s_hz_submode = !s_hz_submode;
+            s_hz_page = (s_hz_page + 1) % HZ_PAGE_MAX;
             s_force_redraw = 1;
         }
         else
