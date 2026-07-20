@@ -52,7 +52,7 @@
 static uint8_t  s_mode = MODE_BIZ;
 static uint8_t  s_mode_prev = MODE_BIZ;   /* 进入HZ前的模式，用于PA1退出恢复 */
 static uint8_t  s_hz_page = 0;            /* HZ页码: 0=ONCHIP, 1+=FLASH分页 */
-#define HZ_PAGE_MAX  3                     /* 129字/56每页=3页: C1 F2 F3 */
+#define HZ_PAGE_MAX  3                     /* 139字/56每页=3页: C1 F2 F3 */
 static uint8_t  s_force_redraw = 1;
 
 /* 业务模式数据 */
@@ -458,7 +458,7 @@ static void Draw_Dbg(const SignalStats_t *s)
 #define FLASH_FONT_COUNT_ADDR   0x000002u
 #define FLASH_FONT_INDEX_ADDR   0x000010u
 #define FLASH_FONT_DATA_ADDR    0x000200u
-#define FLASH_FONT_MAX_COUNT    128u    /* 130字=260字节索引，0x0200前空间充裕 */
+#define FLASH_FONT_MAX_COUNT    256u    /* 索引区RAM缓存上限，支持最多256字 */
 
 static uint8_t  flash_font_index[FLASH_FONT_MAX_COUNT * 2];  /* 索引区RAM缓存 */
 static uint8_t  flash_font_count = 0;                         /* 已烧录字数 */
@@ -681,16 +681,24 @@ static void Draw_HzContent(void)
     }
     else if (s_hz_page == 0)
     {
-        /* ONCHIP: 构造 GB2312 字符串，用 Gui_DrawFont_F16 渲染 */
-        uint8_t gb_str[113];  /* 56字 × 2 + 1 */
-        uint8_t slen = 0;
-        for (uint8_t i = 0; i < page_count && slen < 112; i++)
+        /* ONCHIP: 手动分行渲染（Gui_DrawFont_F16 不自动换行）
+         * 每行 8 字 × 16px = 128px，共 7 行 */
+        uint8_t row, col;
+        for (row = 0; row < 7; row++)
         {
-            gb_str[slen++] = hz16[i].Index[0];
-            gb_str[slen++] = hz16[i].Index[1];
+            uint8_t line[17];  /* 8字 × 2 + 1 */
+            uint8_t llen = 0;
+            for (col = 0; col < 8; col++)
+            {
+                uint8_t idx = page_start + row * 8 + col;
+                if (idx >= hz16_num) break;
+                line[llen++] = hz16[idx].Index[0];
+                line[llen++] = hz16[idx].Index[1];
+            }
+            if (llen == 0) break;
+            line[llen] = 0;
+            Gui_DrawFont_F16(0, row * 16, COLOR_BIZ_VALUE, WHITE, line);
         }
-        gb_str[slen] = 0;
-        Gui_DrawFont_F16(0, 0, COLOR_BIZ_VALUE, WHITE, gb_str);
     }
     else if (flash_font_ready)
     {
