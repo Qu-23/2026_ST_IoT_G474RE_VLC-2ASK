@@ -11,10 +11,7 @@ import sys
 import os
 
 # Characters needed for demo (common answer/defense terms)
-# ONCHIP base font (61 chars)
-CHARS_BASE = "光通信可见接收发送号链路正常异文本图像音频调试待机数据帧错对率系统设备硬件版本功能显示状态传输误码稳定无线应用按键切换模式成功"
-# FLASH extended font for W25Q16 (60 chars, spaces removed)
-CHARS_EXT = "嵌入式物联网处理算法协议编解感采集波特灵敏距离范围滤放校验实时中断低耗节点终端服务演方案目标环境安全电子开关灯温湿源压流识别有效优化停失度"
+CHARS = "光通信可见接收发送号链路正常异文本图像音频调试待机数据帧错对率系统设备硬件版本功能显示状态传输误码稳定无线应用按键切换模式成功嵌入式物联网处理算法协议编解感采集波特灵敏距离范围滤放校验实时中断低耗节点终端服务演方案目标环境安全电子开关灯温湿源压流识别有效优化停失度"
 
 # Font file - try common Windows Chinese fonts
 FONT_PATHS = [
@@ -102,19 +99,12 @@ def main():
     print(f"// Using font: {font_path}")
     print()
 
-    # Generate hz16[] - ONCHIP base font
-    base_chars = generate_array("hz16", CHARS_BASE, font_path)
-    print(f"#define hz16_num {len(base_chars)}")
-
-    print()
-
-    # Generate hz16_ext[] - FLASH extended font
-    ext_chars = generate_array("hz16_ext", CHARS_EXT, font_path)
-    print(f"#define hz16_ext_num {len(ext_chars)}")
+    # Generate hz16[] - merged Chinese font array
+    chars = generate_array("hz16", CHARS, font_path)
+    print(f"#define hz16_num {len(chars)}")
 
     # Summary for verification
-    print(f"// Base: {len(base_chars)} chars x 32 bytes = {len(base_chars)*32} bytes", file=sys.stderr)
-    print(f"// Ext:  {len(ext_chars)} chars x 32 bytes = {len(ext_chars)*32} bytes", file=sys.stderr)
+    print(f"// Total: {len(chars)} chars x 32 bytes = {len(chars)*32} bytes", file=sys.stderr)
 
 if __name__ == "__main__":
     main()

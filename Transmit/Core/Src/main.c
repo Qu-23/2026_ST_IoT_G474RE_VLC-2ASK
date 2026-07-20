@@ -106,11 +106,11 @@ static void PrintCommandList(void)
     printf("\r\n=== 2ASK TX Commands ===\r\n");
     printf("H         Link check (reply OK-H)\r\n");
     printf("R<data>   RAW frame (ASCII payload, e.g. RHello)\r\n");
-    printf("R0x..     RAW frame, HEX bytes  (e.g. R0xAABBCC)\r\n");
-    printf("R0b..     RAW frame, BIN bits   (e.g. R0b01010101)\r\n");
+    printf("R0x...    RAW frame, HEX bytes  (e.g. R0xAABBCC)\r\n");
+    printf("R0b...    RAW frame, BIN bits   (e.g. R0b01010101)\r\n");
     printf("T<string> TEXT frame (ASCII + UTF-8 Chinese, auto GB2312)\r\n");
     printf("V         Scope test frame (payload=0x55)\r\n");
-    printf("M<string> Chinese TEXT frame (same as T, for Chinese input)\r\n");
+    printf("M<文本>   汉字文本帧发送 (same as T, specialized for Chinese input)\r\n");
     printf("C         Show this command list\r\n");
     printf("========================\r\n");
 }
@@ -178,7 +178,7 @@ static void PrintEncodedBytes(const uint8_t *buf, uint16_t len)
  *                                                                           *
  * 上位机串口工具默认 UTF-8 编码，每个汉字 3 字节；RX 端字库用 GB2312（2 字节）。
  * 这里在 TX 端自动把 UTF-8 汉字转成 GB2312 再发送，对上位机用户完全透明。
- * 映射表覆盖 RX 端 130 字字库（光通信可见接收发送号链路正常异文本图像音频
+ * 映射表覆盖 RX 端 129 字字库（光通信可见接收发送号链路正常异文本图像音频
  * 调试待机数据帧错对率 + 系统设备硬件版本功能显示状态传输误码稳定无线应用
  * 按键切换模式成 + 嵌入式物联网处理算法协议编解感采集波特灵敏距离范围滤
  * 放校验实时中断低耗节点终端服务演方案目标环境安全电子开关灯温湿源压流
