@@ -11,7 +11,8 @@ import sys
 import os
 
 # Characters needed for demo (common answer/defense terms)
-CHARS = "光通信可见光接收发送信号链路正常异常文本图像音频调试待机数据帧错对率"
+# 63 chars: 31 original + 32 new (system/device/function/status/perf/wireless/control/result)
+CHARS = "光通信可见接收发送号链路正常异文本图像音频调试待机数据帧错对率系统设备硬件版本功能显示状态传输误码稳定无线应用按键切换模式成功"
 
 # Font file - try common Windows Chinese fonts
 FONT_PATHS = [

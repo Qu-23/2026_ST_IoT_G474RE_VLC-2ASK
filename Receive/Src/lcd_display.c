@@ -315,9 +315,9 @@ static void Draw_BizContent(void)
 
 static void Draw_BizFooter(void)
 {
-    /* Footer: only [PA0]DBG hint, FRM counter hidden for cleaner look */
+    /* Footer: K1=硬件丝印(PA0)，DBG切换提示；FRM counter hidden for cleaner look */
     Lcd_fill(0, 112, 128, 128, COLOR_TITLE_BG);
-    ShowStr("[PA0]DBG", 4, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
+    ShowStr("K1:DBG", 4, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
 }
 
 static void Draw_Biz(void)
@@ -427,7 +427,7 @@ static void Draw_DbgContent(const SignalStats_t *s)
 static void Draw_DbgFooter(void)
 {
     Lcd_fill(0, 112, 128, 128, COLOR_TITLE_BG);
-    ShowStr("[PA0]BIZ", 4, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
+    ShowStr("K1:BIZ", 4, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
 }
 
 static void Draw_Dbg(const SignalStats_t *s)
@@ -629,53 +629,62 @@ static void FlashFont_DrawTextBlock(uint16_t x, uint16_t y, const uint8_t *s,
 /*============================================================================*
  *                          汉字测试模式（隐藏，PA1进入）                    *
  *============================================================================*/
-/* GB2312转义序列避免源文件编码问题。每行8字×16px=128px，共31字分4行(8/8/8/7) */
+/* GB2312转义序列避免源文件编码问题。每行8字×16px=128px。
+ * 61字分8行(8/8/8/7/8/8/8/8)，HZ模式全屏显示。 */
 static const uint8_t hz_line1[] = "\xB9\xE2\xCD\xA8\xD0\xC5\xBF\xC9\xBC\xFB\xBD\xD3\xCA\xD5\xB7\xA2"; /* 光通信可见接收发 */
 static const uint8_t hz_line2[] = "\xCB\xCD\xBA\xC5\xC1\xB4\xC2\xB7\xD5\xFD\xB3\xA3\xD2\xEC\xCE\xC4"; /* 送号链路正常异文 */
 static const uint8_t hz_line3[] = "\xB1\xBE\xCD\xBC\xCF\xF1\xD2\xF4\xC6\xB5\xB5\xF7\xCA\xD4\xB4\xFD"; /* 本图像音频调试待 */
 static const uint8_t hz_line4[] = "\xBB\xFA\xCA\xFD\xBE\xDD\xD6\xA1\xB4\xED\xB6\xD4\xC2\xCA";         /* 机数据帧错对率 */
+static const uint8_t hz_line5[] = "\xCF\xB5\xCD\xB3\xC9\xE8\xB1\xB8\xD3\xB2\xBC\xFE\xB0\xE6\xB1\xBE"; /* 系统设备硬件版本 */
+static const uint8_t hz_line6[] = "\xB9\xA6\xC4\xDC\xCF\xD4\xCA\xBE\xD7\xB4\xCC\xAC\xB4\xAB\xCA\xE4"; /* 功能显示状态传输 */
+static const uint8_t hz_line7[] = "\xCE\xF3\xC2\xEB\xCE\xC8\xB6\xA8\xCE\xDE\xCF\xDF\xD3\xA6\xD3\xC3"; /* 误码稳定无线应用 */
+static const uint8_t hz_line8[] = "\xB0\xB4\xBC\xFC\xC7\xD0\xBB\xBB\xC4\xA3\xCA\xBD\xB3\xC9\xB9\xA6"; /* 按键切换模式成功 */
 
 static void Draw_HzTitle(void)
 {
-    Lcd_fill(0, 0, 128, 16, COLOR_TITLE_BG);
-    ShowStr("[PA1]EXIT", 4, 0, COLOR_TITLE_FG, COLOR_TITLE_BG);
-    ShowStr("[PA0]SW", 72, 0, COLOR_TITLE_FG, COLOR_TITLE_BG);
+    /* HZ模式全屏显示汉字，不画标题栏 */
+    (void)0;
 }
 
 static void Draw_HzFooter(void)
 {
-    Lcd_fill(0, 112, 128, 128, COLOR_TITLE_BG);
-    if (s_hz_submode == 0)
-        ShowStr("ONCHIP", 4, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
-    else
-        ShowStr("FLASH", 4, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
-    if (s_hz_submode == 1 && flash_font_ready)
-    {
-        ShowStr("N=", 64, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
-        ShowNum(flash_font_count, 88, 112, COLOR_TITLE_FG, COLOR_TITLE_BG);
-    }
+    /* HZ模式全屏显示汉字，不画底部栏 */
+    (void)0;
 }
 
 static void Draw_HzContent(void)
 {
-    Lcd_fill(0, 32, 128, 112, WHITE);
+    /* 全屏 8 行汉字 y=0~127，第4行末尾(x=112)显示模式标识 C/F */
+    Lcd_fill(0, 0, 128, 128, WHITE);
     if (s_hz_submode == 0)
     {
         /* 片上字库：用 Gui_DrawFont_F16 渲染 */
-        Gui_DrawFont_F16(0, 32, COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line1);
-        Gui_DrawFont_F16(0, 48, COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line2);
-        Gui_DrawFont_F16(0, 64, COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line3);
-        Gui_DrawFont_F16(0, 80, COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line4);
+        Gui_DrawFont_F16(0, 0,   COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line1);
+        Gui_DrawFont_F16(0, 16,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line2);
+        Gui_DrawFont_F16(0, 32,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line3);
+        Gui_DrawFont_F16(0, 48,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line4);
+        Gui_DrawFont_F16(0, 64,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line5);
+        Gui_DrawFont_F16(0, 80,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line6);
+        Gui_DrawFont_F16(0, 96,  COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line7);
+        Gui_DrawFont_F16(0, 112, COLOR_BIZ_VALUE, WHITE, (uint8_t*)hz_line8);
+        /* 第4行末尾(7字，x=112空闲)显示 C=ONCHIP */
+        ShowChar('C', 112, 48, COLOR_OK, WHITE);
     }
     else
     {
         /* FLASH字库：从W25Q16读取渲染 */
         if (flash_font_ready)
         {
-            FlashFont_DrawString(0, 32, hz_line1, COLOR_BIZ_VALUE, WHITE);
-            FlashFont_DrawString(0, 48, hz_line2, COLOR_BIZ_VALUE, WHITE);
-            FlashFont_DrawString(0, 64, hz_line3, COLOR_BIZ_VALUE, WHITE);
-            FlashFont_DrawString(0, 80, hz_line4, COLOR_BIZ_VALUE, WHITE);
+            FlashFont_DrawString(0, 0,   hz_line1, COLOR_BIZ_VALUE, WHITE);
+            FlashFont_DrawString(0, 16,  hz_line2, COLOR_BIZ_VALUE, WHITE);
+            FlashFont_DrawString(0, 32,  hz_line3, COLOR_BIZ_VALUE, WHITE);
+            FlashFont_DrawString(0, 48,  hz_line4, COLOR_BIZ_VALUE, WHITE);
+            FlashFont_DrawString(0, 64,  hz_line5, COLOR_BIZ_VALUE, WHITE);
+            FlashFont_DrawString(0, 80,  hz_line6, COLOR_BIZ_VALUE, WHITE);
+            FlashFont_DrawString(0, 96,  hz_line7, COLOR_BIZ_VALUE, WHITE);
+            FlashFont_DrawString(0, 112, hz_line8, COLOR_BIZ_VALUE, WHITE);
+            /* 第4行末尾显示 F=FLASH + 字数 */
+            ShowChar('F', 112, 48, COLOR_OK, WHITE);
         }
         else
         {
@@ -688,13 +697,10 @@ static void Draw_Hz(void)
 {
     if (s_force_redraw)
     {
-        Draw_HzTitle();
-        Draw_HzFooter();
-        Draw_HzContent();
-    }
-    Draw_LinkBar();
-    if (s_force_redraw)
+        Draw_HzContent();  /* 全屏8行汉字，无标题/状态/底部栏 */
         s_force_redraw = 0;
+    }
+    /* HZ模式不调用 Draw_LinkBar，避免覆盖第2行汉字 */
 }
 
 /*============================================================================*

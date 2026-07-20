@@ -15,7 +15,7 @@ extern "C" {
 #include <stdint.h>
 
 /* Font count macros - 16x16 Chinese font enabled for demo */
-#define hz16_num 31
+#define hz16_num 61
 #define hz24_num 0
 
 /* Font data declarations - defined in Font.c */
