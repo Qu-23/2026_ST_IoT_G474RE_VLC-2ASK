@@ -108,7 +108,7 @@ static void PrintCommandList(void)
     printf("R<data>   RAW frame (ASCII payload, e.g. RHello)\r\n");
     printf("R0x..     RAW frame, HEX bytes  (e.g. R0xAABBCC)\r\n");
     printf("R0b..     RAW frame, BIN bits   (e.g. R0b01010101)\r\n");
-    printf("T<string> TEXT frame (ASCII)\r\n");
+    printf("T<string> TEXT frame (ASCII + UTF-8 Chinese, auto GB2312)\r\n");
     printf("V         Scope test frame (payload=0x55)\r\n");
     printf("M<n>      Send predefined GB2312 Chinese TEXT frame (n=1..5)\r\n");
     printf("C         Show this command list\r\n");
@@ -192,6 +192,111 @@ static const uint16_t  msg_zh_len[]   = { sizeof(msg_zh1)-1, sizeof(msg_zh2)-1,
                                           sizeof(msg_zh3)-1, sizeof(msg_zh4)-1,
                                           sizeof(msg_zh5)-1 };
 #define MSG_ZH_COUNT  (sizeof(msg_zh_table) / sizeof(msg_zh_table[0]))
+
+/*============================================================================*
+ *          UTF-8 -> GB2312 transcoding for T command                         *
+ *                                                                           *
+ * 上位机串口工具默认 UTF-8 编码，每个汉字 3 字节；RX 端字库用 GB2312（2 字节）。
+ * 这里在 TX 端自动把 UTF-8 汉字转成 GB2312 再发送，对上位机用户完全透明。
+ * 映射表只覆盖 RX 端 31 字字库（光通信可见接收发送号链路正常异文本图像音频
+ * 调试待机数据帧错对率），其它汉字会被替换为 '?'。                          *
+ *============================================================================*/
+typedef struct {
+    uint8_t utf8[3];   /* UTF-8 编码（3 字节） */
+    uint8_t gb[2];     /* GB2312 编码（2 字节） */
+} utf8_gb_t;
+
+static const utf8_gb_t utf8_gb_table[] = {
+    {{0xE5,0x85,0x89},{0xB9,0xE2}},  /* 光 */
+    {{0xE9,0x80,0x9A},{0xCD,0xA8}},  /* 通 */
+    {{0xE4,0xBF,0xA1},{0xD0,0xC5}},  /* 信 */
+    {{0xE5,0x8F,0xAF},{0xBF,0xC9}},  /* 可 */
+    {{0xE8,0xA7,0x81},{0xBC,0xFB}},  /* 见 */
+    {{0xE6,0x8E,0xA5},{0xBD,0xD3}},  /* 接 */
+    {{0xE6,0x94,0xB6},{0xCA,0xD5}},  /* 收 */
+    {{0xE5,0x8F,0x91},{0xB7,0xA2}},  /* 发 */
+    {{0xE9,0x80,0x81},{0xCB,0xCD}},  /* 送 */
+    {{0xE5,0x8F,0xB7},{0xBA,0xC5}},  /* 号 */
+    {{0xE9,0x93,0xBE},{0xC1,0xB4}},  /* 链 */
+    {{0xE8,0xB7,0xAF},{0xC2,0xB7}},  /* 路 */
+    {{0xE6,0xAD,0xA3},{0xD5,0xFD}},  /* 正 */
+    {{0xE5,0xB8,0xB8},{0xB3,0xA3}},  /* 常 */
+    {{0xE5,0xBC,0x82},{0xD2,0xEC}},  /* 异 */
+    {{0xE6,0x96,0x87},{0xCE,0xC4}},  /* 文 */
+    {{0xE6,0x9C,0xAC},{0xB1,0xBE}},  /* 本 */
+    {{0xE5,0x9B,0xBE},{0xCD,0xBC}},  /* 图 */
+    {{0xE5,0x83,0x8F},{0xCF,0xF1}},  /* 像 */
+    {{0xE9,0x9F,0xB3},{0xD2,0xF4}},  /* 音 */
+    {{0xE9,0xA2,0x91},{0xC6,0xB5}},  /* 频 */
+    {{0xE8,0xB0,0x83},{0xB5,0xF7}},  /* 调 */
+    {{0xE8,0xAF,0x95},{0xCA,0xD4}},  /* 试 */
+    {{0xE5,0xBE,0x85},{0xB4,0xFD}},  /* 待 */
+    {{0xE6,0x9C,0xBA},{0xBB,0xFA}},  /* 机 */
+    {{0xE6,0x95,0xB0},{0xCA,0xFD}},  /* 数 */
+    {{0xE6,0x8D,0xAE},{0xBE,0xDD}},  /* 据 */
+    {{0xE5,0xB8,0xA7},{0xD6,0xA1}},  /* 帧 */
+    {{0xE9,0x94,0x99},{0xB4,0xED}},  /* 错 */
+    {{0xE5,0xAF,0xB9},{0xB6,0xD4}},  /* 对 */
+    {{0xE7,0x8E,0x87},{0xC2,0xCA}},  /* 率 */
+};
+#define UTF8_GB_TABLE_SIZE  (sizeof(utf8_gb_table) / sizeof(utf8_gb_table[0]))
+
+/* 把 UTF-8 字节流转换为 GB2312 字节流。
+ * - ASCII (<0x80) 原样保留
+ * - 3字节 UTF-8 汉字 → 2字节 GB2312（查表，未找到则替换为 '?'）
+ * - 其他非法字节替换为 '?'
+ * 返回输出字节数。 */
+static uint16_t TranscodeUTF8toGB2312(const char *in, uint16_t in_len,
+                                       uint8_t *out, uint16_t max_out)
+{
+    uint16_t i = 0, o = 0;
+    while (i < in_len && o < max_out)
+    {
+        uint8_t b = (uint8_t)in[i];
+        if (b < 0x80)
+        {
+            /* ASCII: 1 byte direct */
+            out[o++] = b;
+            i++;
+        }
+        else if ((b & 0xE0) == 0xC0 && i + 1 < in_len)
+        {
+            /* 2-byte UTF-8 (U+0080..U+07FF): not a Chinese char, skip as '?' */
+            if (o < max_out) out[o++] = '?';
+            i += 2;
+        }
+        else if ((b & 0xF0) == 0xE0 && i + 2 < in_len)
+        {
+            /* 3-byte UTF-8 (Chinese chars live here): lookup table */
+            uint16_t k;
+            uint8_t found = 0;
+            for (k = 0; k < UTF8_GB_TABLE_SIZE; k++)
+            {
+                if (utf8_gb_table[k].utf8[0] == (uint8_t)in[i] &&
+                    utf8_gb_table[k].utf8[1] == (uint8_t)in[i+1] &&
+                    utf8_gb_table[k].utf8[2] == (uint8_t)in[i+2])
+                {
+                    if (o + 1 < max_out)
+                    {
+                        out[o++] = utf8_gb_table[k].gb[0];
+                        out[o++] = utf8_gb_table[k].gb[1];
+                    }
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found && o < max_out) out[o++] = '?';
+            i += 3;
+        }
+        else
+        {
+            /* invalid byte */
+            out[o++] = '?';
+            i++;
+        }
+    }
+    return o;
+}
 
 /* USER CODE END 0 */
 
@@ -496,18 +601,25 @@ static void ProcessCommand(char *line)
 
     case 'T':
     case 't':
-        /* TEXT frame: payload is ASCII string */
+        /* TEXT frame: 自动 UTF-8 → GB2312 转码后发送。
+         * 上位机可直接发汉字（UTF-8 编码），TX 转成 GB2312 再发送，
+         * RX 端用 GB2312 字库还原显示。ASCII 字符原样保留。 */
         if (arglen == 0) { printf("T: empty string\r\n"); break; }
-        if (arglen > ASK_MAX_PAYLOAD) arglen = ASK_MAX_PAYLOAD;
-        ASK_TX_FIFO_Clear();
-        if (ASK_TX_SendFrame(ASK_TYPE_TEXT, (const uint8_t *)arg, (uint16_t)arglen) == 0)
         {
-            tx_frame_pending = 1;
-            printf("T%u OK\r\n", arglen);
-            PrintEncodedBytes((const uint8_t *)arg, (uint16_t)arglen);
+            uint8_t  payload_buf[ASK_MAX_PAYLOAD];
+            uint16_t plen = TranscodeUTF8toGB2312(arg, (uint16_t)arglen,
+                                                   payload_buf, ASK_MAX_PAYLOAD);
+            if (plen == 0) { printf("T: transcode empty\r\n"); break; }
+            ASK_TX_FIFO_Clear();
+            if (ASK_TX_SendFrame(ASK_TYPE_TEXT, payload_buf, plen) == 0)
+            {
+                tx_frame_pending = 1;
+                printf("T OK in=%u out=%u\r\n", (uint16_t)arglen, plen);
+                PrintEncodedBytes(payload_buf, plen);
+            }
+            else
+                printf("T FULL\r\n");
         }
-        else
-            printf("T FULL\r\n");
         break;
 
     case 'V':

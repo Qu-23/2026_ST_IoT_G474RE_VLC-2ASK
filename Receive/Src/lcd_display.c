@@ -253,15 +253,28 @@ static void Draw_BizContent(void)
 
     if (s_biz_type == ASK_TYPE_TEXT)
     {
-        /* TEXT: 16 chars/row */
-        int row = 0, col = 0;
-        for (int i = 0; i < show_len && row < max_rows; i++)
+        /* TEXT: 支持 ASCII + GB2312 汉字混合显示，自动换行
+         * 用 FLASH 字库渲染。若 FLASH 字库未就绪则回退到 ASCII 显示。
+         * 注意：s_biz_payload 不一定以 null 结尾，需用栈缓冲区添加终止符 */
+        if (flash_font_ready)
         {
-            char c = (char)s_biz_payload[i];
-            if (c < 32 || c > 126) c = '.';
-            ShowChar(c, col * 8, y_start + row * 16, COLOR_BIZ_VALUE, WHITE);
-            col++;
-            if (col >= 16) { col = 0; row++; }
+            uint8_t buf[BIZ_PAYLOAD_MAX + 1];
+            memcpy(buf, s_biz_payload, show_len);
+            buf[show_len] = 0;
+            FlashFont_DrawTextBlock(0, y_start, buf, COLOR_BIZ_VALUE, WHITE, 128, 112);
+        }
+        else
+        {
+            /* 无 FLASH 字库：纯 ASCII 回退（非 ASCII 字节显示为 '.'） */
+            int row = 0, col = 0;
+            for (int i = 0; i < show_len && row < max_rows; i++)
+            {
+                char c = (char)s_biz_payload[i];
+                if (c < 32 || c > 126) c = '.';
+                ShowChar(c, col * 8, y_start + row * 16, COLOR_BIZ_VALUE, WHITE);
+                col++;
+                if (col >= 16) { col = 0; row++; }
+            }
         }
     }
     else
@@ -568,6 +581,38 @@ static void FlashFont_DrawString(uint16_t x, uint16_t y, const uint8_t *s,
             else
             {
                 /* 未找到，显示占位符 */
+                Gui_DrawChar_Ascii(x, y, fc, bc, '?');
+                x += 8;
+            }
+            s += 2;
+        }
+    }
+}
+
+/* 多行文本块渲染：支持自动换行（汉字16px / ASCII 8px，行高16px）
+ * 用于 BIZ 模式 TEXT 帧显示。max_x=行宽上限, max_y=底部y上限(不绘制>=max_y的行) */
+static void FlashFont_DrawTextBlock(uint16_t x, uint16_t y, const uint8_t *s,
+                                     uint16_t fc, uint16_t bc,
+                                     uint16_t max_x, uint16_t max_y)
+{
+    while (*s && y < max_y)
+    {
+        if (*s < 0x80)
+        {
+            /* ASCII: 8px 宽 */
+            if (x + 8 > max_x) { x = 0; y += 16; if (y >= max_y) break; }
+            Gui_DrawChar_Ascii(x, y, fc, bc, (char)*s);
+            x += 8;
+            s++;
+        }
+        else
+        {
+            /* GB2312 汉字: 16px 宽 */
+            if (x + 16 > max_x) { x = 0; y += 16; if (y >= max_y) break; }
+            if (FlashFont_DrawChar(x, y, s[0], s[1], fc, bc))
+                x += 16;
+            else
+            {
                 Gui_DrawChar_Ascii(x, y, fc, bc, '?');
                 x += 8;
             }
