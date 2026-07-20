@@ -74,6 +74,12 @@ static uint8_t  s_link_changed = 1;     /* 状态变化标志 */
 static uint32_t s_last_hb_count = 0;
 static uint32_t s_last_hb_tick = 0;
 
+/* 前向声明：FLASH 字库子系统（定义在后面，BIZ 模式需提前引用） */
+static uint8_t  flash_font_ready;
+static void FlashFont_DrawTextBlock(uint16_t x, uint16_t y, const uint8_t *s,
+                                     uint16_t fc, uint16_t bc,
+                                     uint16_t max_x, uint16_t max_y);
+
 /*============================================================================*
  *                          绘图辅助                                          *
  *============================================================================*/
@@ -455,7 +461,6 @@ static void Draw_Dbg(const SignalStats_t *s)
 
 static uint8_t  flash_font_index[FLASH_FONT_MAX_COUNT * 2];  /* 索引区RAM缓存 */
 static uint8_t  flash_font_count = 0;                         /* 已烧录字数 */
-static uint8_t  flash_font_ready = 0;                         /* FLASH字库就绪标志 */
 
 /* 检测 W25Q16 是否已烧录字库 */
 static uint8_t FlashFont_IsProgrammed(void)
