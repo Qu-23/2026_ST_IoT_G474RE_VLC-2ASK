@@ -331,14 +331,13 @@ static void Draw_ImageBuffer(void)
 /* 处理 GRAPHIC 帧 */
 static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
 {
-    if (len < 2) return;  /* 至少 shape + param 或 seq */
+    if (len < 2) return;
 
-    uint8_t first = payload[0];
-
-    if (first <= 2)
+    /* 用载荷长度区分：几何图样 len=2，图像帧 len=65 */
+    if (len == 2)
     {
-        /* 几何图样（shape 0-2） */
-        uint8_t shape = first;
+        /* 几何图样：payload = [shape, param] */
+        uint8_t shape = payload[0];
 
         Lcd_fill(0, 32, 128, 112, WHITE);  /* 清除内容区 */
 
@@ -358,10 +357,10 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
             DrawTriangle(64, 40, 32, 104, 96, 104, BLACK);
         }
     }
-    else if (len == 65 && first < 33)
+    else if (len == 65 && payload[0] < 33)
     {
-        /* Logo 图像帧（seq 0-32） */
-        uint8_t seq = first;
+        /* Logo 图像帧：payload = [seq, data0..data63] */
+        uint8_t seq = payload[0];
         uint16_t offset = (uint16_t)(seq * 64);
 
         memcpy(&s_image_buf[offset], &payload[1], 64);
