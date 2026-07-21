@@ -1151,7 +1151,10 @@ void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len)
         }
         else if (s_image_total_frames > 0)
         {
-            /* 图像接收中：进度条由 Draw_Biz 节流刷新，这里不做任何LCD操作 */
+            /* 图像头帧到达：触发一次完整内容区刷新，清除Waiting并画IMG+进度框架 */
+            s_image_last_bar_w = 0;
+            s_image_last_draw_tick = 0;  /* 重置节流计时，立即刷新进度 */
+            s_biz_updated = 1;
         }
         else
         {
