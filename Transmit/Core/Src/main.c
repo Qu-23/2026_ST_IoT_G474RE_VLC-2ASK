@@ -80,22 +80,18 @@ extern DMA_HandleTypeDef hdma_dac2_ch1;  // actual DMA handle for DAC2, defined 
 static char     cmd_line[64];
 static uint8_t  cmd_len = 0;
 
-/*--- Image stream receive state machine (non-blocking) --------------------*
- * 收到 I 命令或自动检测到 0xFE 开头时进入图像流模式                   *
- * 状态: IDLE → HDR(收4B头) → HDR_WAIT(等FIFO排空)                    *
- *     → DATA(收65B帧) → DATA_WAIT(等FIFO排空) → ... → IDLE           *
- * 全程不调用 HAL_Delay，UART 字节持续被消费，不丢帧                    */
-#define IS_IDLE      0
-#define IS_HDR      1   /* 正在收4字节图像头 */
-#define IS_HDR_WAIT 2   /* 头帧已推入FIFO，等排空 */
-#define IS_DATA     3   /* 正在收65字节数据帧 */
-#define IS_DATA_WAIT 4  /* 数据帧已推入FIFO，等排空 */
+/*--- Image stream: 先收完整个 .bin 再发（杜绝 UART/2ASK 竞争） -----------*
+ * 流程: IDLE → RECV(持续收UART字节到file_buf) → SEND(逐帧发2ASK) → IDLE *
+ * 收完2052字节后再发，和P命令一样安全，不存在UART丢帧问题                */
+#define IS_IDLE  0
+#define IS_RECV  1   /* 正在从串口接收 .bin 文件到 file_buf */
+#define IS_SEND  2   /* .bin 收完，逐帧发送到 2ASK 通道 */
 static uint8_t  img_st = IS_IDLE;
-static uint8_t  img_buf[65];           /* 帧接收缓冲 */
-static uint8_t  img_pos = 0;           /* 当前帧已接收字节数 */
-static uint8_t  img_total = 0;         /* 数据帧总数 */
-static uint8_t  img_cnt = 0;           /* 已发送数据帧计数 */
-static uint32_t img_wait_start = 0;    /* FIFO等待起始tick */
+static uint8_t  img_file_buf[4 + 32 * 64];  /* 4B头 + 32×64B数据 = 2052B */
+static uint16_t img_recv_pos = 0;           /* 已接收字节数 */
+static uint16_t img_file_size = 0;          /* .bin 文件总大小 */
+static uint8_t  img_send_seq = 0;           /* 当前发送的数据帧序号 */
+static uint8_t  img_send_total = 0;         /* 数据帧总数 */
 
 /*--- Audio DEMO state ------------------------------------------------------*/
 static uint8_t  audio_demo_active = 0;    /* 1 = stream AUDIO frames       */
@@ -605,70 +601,41 @@ int main(void)
 		{
 			uint8_t rx_byte = UART_GetRxByte();
 
-			/* ── 图像流状态机（非阻塞，不丢帧） ── */
-			if (img_st != IS_IDLE)
+			/* ── 图像接收模式：持续收字节到 file_buf ── */
+			if (img_st == IS_RECV)
 			{
-				img_buf[img_pos++] = rx_byte;
-
-				if (img_st == IS_HDR)
+				if (img_recv_pos < sizeof(img_file_buf))
 				{
-					/* 收4字节图像头 */
-					if (img_pos >= 4)
-					{
-						img_total = img_buf[1];
-						/* 封装头帧: [0xFE, total, w/8, h, 0xFF...] */
-						uint8_t hdr[65];
-						memset(hdr, 0xFF, 65);
-						hdr[0] = 0xFE;
-						hdr[1] = img_buf[1];
-						hdr[2] = img_buf[2];
-						hdr[3] = img_buf[3];
+					img_file_buf[img_recv_pos] = rx_byte;
+					img_recv_pos++;
+				}
 
-						ASK_TX_FIFO_Clear();
-						if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, hdr, 65) == 0)
-						{
-							tx_frame_pending = 1;
-							printf("I:HDR frames=%u\r\n", img_total);
-							img_st = IS_HDR_WAIT;
-							img_wait_start = HAL_GetTick();
-						}
-						else
-						{
-							printf("I:HDR FULL\r\n");
-							img_st = IS_IDLE;
-						}
-					}
-				}
-				else if (img_st == IS_DATA)
+				/* 收到4字节头后解析总大小 */
+				if (img_recv_pos == 4 && img_file_size == 0)
 				{
-					/* 收65字节数据帧 */
-					if (img_pos >= 65)
-					{
-						if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, img_buf, 65) == 0)
-						{
-							tx_frame_pending = 1;
-							img_cnt++;
-							img_st = IS_DATA_WAIT;
-							img_wait_start = HAL_GetTick();
-						}
-						else
-						{
-							printf("I:FULL at %u\r\n", img_cnt);
-							img_st = IS_IDLE;
-						}
-					}
+					img_send_total = img_file_buf[1];
+					img_file_size = 4 + (uint16_t)img_send_total * 64;
+					printf("I:HDR total=%u size=%u\r\n", img_send_total, img_file_size);
 				}
-				/* IS_HDR_WAIT / IS_DATA_WAIT: 不收新字节，只等FIFO排空 */
+
+				/* 收完整个 .bin 文件 → 切换到发送模式 */
+				if (img_file_size > 0 && img_recv_pos >= img_file_size)
+				{
+					printf("I:RECV done %uB, sending...\r\n", img_recv_pos);
+					img_st = IS_SEND;
+					img_send_seq = 0;
+					ASK_TX_FIFO_Clear();
+				}
 				continue;
 			}
 
 			/* ── 自动检测: 0xFE 开头 = bin文件图像头 ── */
 			if (rx_byte == 0xFE && cmd_len == 0)
 			{
-				img_st = IS_HDR;
-				img_pos = 1;
-				img_buf[0] = 0xFE;
-				img_cnt = 0;
+				img_st = IS_RECV;
+				img_recv_pos = 1;
+				img_file_buf[0] = 0xFE;
+				img_file_size = 0;
 				printf("I:AUTO detected .bin header\r\n");
 				continue;
 			}
@@ -704,30 +671,43 @@ int main(void)
 			tx_frame_pending = 0;
 		}
 
-		// --- 2c. Image stream: FIFO排空后推进状态机（非阻塞） ---
-		if (img_st == IS_HDR_WAIT && !tx_frame_pending)
+		// --- 2c. Image stream SEND: 逐帧发送已缓存的 .bin 数据 ---
+		if (img_st == IS_SEND && !tx_frame_pending)
 		{
-			/* 头帧已发完，加idle间隔后转入数据帧接收 */
-			for (int i = 0; i < 30; i++)
-				ASK_TX_PushByte(0x55);
-			img_st = IS_DATA;
-			img_pos = 0;
-		}
-		else if (img_st == IS_DATA_WAIT && !tx_frame_pending)
-		{
-			/* 数据帧已发完，加idle间隔 */
-			for (int i = 0; i < 30; i++)
-				ASK_TX_PushByte(0x55);
-			img_pos = 0;
-
-			if (img_cnt >= img_total)
+			if (img_send_seq == 0)
 			{
-				printf("I:OK frames=%u\r\n", img_cnt);
-				img_st = IS_IDLE;
+				/* 发送头帧: [0xFE, total, w/8, h, 0xFF...] */
+				uint8_t hdr[65];
+				memset(hdr, 0xFF, 65);
+				hdr[0] = 0xFE;
+				hdr[1] = img_file_buf[1];
+				hdr[2] = img_file_buf[2];
+				hdr[3] = img_file_buf[3];
+				ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, hdr, 65);
+				tx_frame_pending = 1;
+				img_send_seq = 1;
+			}
+			else if (img_send_seq <= img_send_total)
+			{
+				/* 发送数据帧: [seq, data0..data63] */
+				uint8_t frm[65];
+				uint16_t off = 4 + (img_send_seq - 1) * 64;
+				frm[0] = (uint8_t)(img_send_seq - 1);
+				memcpy(&frm[1], &img_file_buf[off], 64);
+				ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, frm, 65);
+				tx_frame_pending = 1;
+				img_send_seq++;
+
+				/* 帧间 idle 间隔 */
+				for (int i = 0; i < 30; i++)
+					ASK_TX_PushByte(0x55);
+				HAL_Delay(30);
 			}
 			else
 			{
-				img_st = IS_DATA;
+				/* 全部发送完成 */
+				printf("I:OK frames=%u\r\n", img_send_total);
+				img_st = IS_IDLE;
 			}
 		}
 
@@ -1200,11 +1180,11 @@ static void ProcessCommand(char *line)
 
     case 'I':
     case 'i':
-        /* Image stream: 显式进入图像接收模式 */
+        /* Image stream: 进入 .bin 文件接收模式 */
         {
-            img_st = IS_HDR;
-            img_pos = 0;
-            img_cnt = 0;
+            img_st = IS_RECV;
+            img_recv_pos = 0;
+            img_file_size = 0;
             printf("I:READY send .bin now\r\n");
         }
         break;
