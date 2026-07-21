@@ -75,6 +75,7 @@ static uint8_t s_image_rx_mask[IMAGE_FRAMES_MAX]; /* 每帧是否已接收 */
 static uint8_t s_image_complete = 0;
 static uint8_t s_image_rx_count = 0;     /* 已接收帧数 */
 static uint8_t s_image_total_frames = 0; /* 由头帧动态设定 */
+static uint8_t s_image_shape = 0xFF;     /* 几何图样形状 (0/1/2)，0xFF=无 */
 
 /* 待机动画 */
 static uint8_t  s_anim_idx = 0;
@@ -332,6 +333,7 @@ static void Draw_ImageBuffer(void)
 }
 
 /* 处理 GRAPHIC 帧 */
+/* 处理 GRAPHIC 帧 - 只更新数据和标志，不做 LCD 绘制（避免阻塞接收） */
 static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
 {
     if (len < 2) return;
@@ -339,17 +341,11 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
     /* 几何图样：payload = [shape, param], len=2 */
     if (len == 2)
     {
-        uint8_t shape = payload[0];
         s_image_complete = 0;
-
-        Lcd_fill(0, 32, 128, 112, WHITE);
-
-        if (shape == 0)
-            DrawCircle(64, 72, 32, BLACK);
-        else if (shape == 1)
-            Lcd_fill(32, 40, 96, 104, BLACK);
-        else if (shape == 2)
-            DrawTriangle(64, 40, 32, 104, 96, 104, BLACK);
+        s_image_total_frames = 0;
+        s_image_rx_count = 0;
+        memset(s_image_rx_mask, 0, sizeof(s_image_rx_mask));
+        s_image_shape = payload[0];  /* 记录形状，由 Draw_BizContent 渲染 */
         return;
     }
 
@@ -361,13 +357,8 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
         s_image_total_frames = payload[1];
         s_image_rx_count = 0;
         s_image_complete = 0;
+        s_image_shape = 0xFF;  /* 清除几何图样 */
         memset(s_image_rx_mask, 0, sizeof(s_image_rx_mask));
-        /* 显示接收准备 */
-        Lcd_fill(0, 32, 128, 112, WHITE);
-        ShowStr("IMG", 4, 48, COLOR_BIZ_VALUE, WHITE);
-        ShowNum(0, 36, 64, COLOR_OK, WHITE);
-        ShowChar('/', 52, 64, COLOR_BIZ_LABEL, WHITE);
-        ShowNum(s_image_total_frames, 60, 64, COLOR_BIZ_LABEL, WHITE);
         return;
     }
 
@@ -377,7 +368,7 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
         uint8_t seq = payload[0];
         uint16_t offset = (uint16_t)(seq * 64);
 
-        if (offset + 64 > IMAGE_SIZE) return;  /* 越界保护 */
+        if (offset + 64 > IMAGE_SIZE) return;
         memcpy(&s_image_buf[offset], &payload[1], 64);
 
         if (s_image_rx_mask[seq] == 0)
@@ -386,25 +377,10 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
             s_image_rx_count++;
         }
 
-        uint8_t total = s_image_total_frames > 0 ? s_image_total_frames : 32;
-
-        if (s_image_rx_count >= total)
+        if (s_image_total_frames > 0 && s_image_rx_count >= s_image_total_frames)
         {
             s_image_complete = 1;
-            Draw_ImageBuffer();
-        }
-        else
-        {
-            /* 接收中：显示进度 */
-            Lcd_fill(0, 32, 128, 112, WHITE);
-            ShowStr("IMG", 4, 48, COLOR_BIZ_VALUE, WHITE);
-            ShowNum(s_image_rx_count, 36, 64, COLOR_OK, WHITE);
-            ShowChar('/', 52, 64, COLOR_BIZ_LABEL, WHITE);
-            ShowNum(total, 60, 64, COLOR_BIZ_LABEL, WHITE);
-            {
-                uint16_t bar_w = (uint16_t)(s_image_rx_count * 120 / total);
-                Lcd_fill(4, 88, 4 + bar_w, 96, COLOR_OK);
-            }
+            /* 渲染由 Draw_Biz 执行 */
         }
     }
 }
@@ -454,8 +430,31 @@ static void Draw_BizContent(void)
     }
     else if (s_biz_type == ASK_TYPE_GRAPHIC)
     {
-        /* GRAPHIC: 几何图样或Logo图像 */
-        ProcessGraphicFrame(s_biz_payload, s_biz_len);
+        /* GRAPHIC: 几何图样或图像进度/完成 - 渲染由标志驱动 */
+        if (s_image_complete)
+        {
+            /* 图像已完成，Draw_Biz 会全屏渲染，这里不画 */
+        }
+        else if (s_image_shape != 0xFF)
+        {
+            /* 几何图样 */
+            if (s_image_shape == 0)
+                DrawCircle(64, 72, 32, BLACK);
+            else if (s_image_shape == 1)
+                Lcd_fill(32, 40, 96, 104, BLACK);
+            else if (s_image_shape == 2)
+                DrawTriangle(64, 40, 32, 104, 96, 104, BLACK);
+        }
+        else if (s_image_total_frames > 0)
+        {
+            /* 图像接收进度 */
+            ShowStr("IMG", 4, 48, COLOR_BIZ_VALUE, WHITE);
+            ShowNum(s_image_rx_count, 36, 64, COLOR_OK, WHITE);
+            ShowChar('/', 52, 64, COLOR_BIZ_LABEL, WHITE);
+            ShowNum(s_image_total_frames, 60, 64, COLOR_BIZ_LABEL, WHITE);
+            uint16_t bar_w = (uint16_t)(s_image_rx_count * 120 / s_image_total_frames);
+            Lcd_fill(4, 88, 4 + bar_w, 96, COLOR_OK);
+        }
     }
     else
     {
@@ -1057,13 +1056,19 @@ void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len)
     s_biz_has_data = 1;
     s_biz_updated = 1;
 
-    /* 非图像帧或几何图样帧清除图像全屏状态 */
-    if (type != ASK_TYPE_GRAPHIC || len == 2)
+    /* 非图像帧清除图像状态 */
+    if (type != ASK_TYPE_GRAPHIC)
     {
         s_image_complete = 0;
         s_image_total_frames = 0;
+        s_image_shape = 0xFF;
         memset(s_image_rx_mask, 0, sizeof(s_image_rx_mask));
         s_image_rx_count = 0;
+    }
+    else
+    {
+        /* GRAPHIC 帧：只缓存数据，不绘制（避免阻塞接收） */
+        ProcessGraphicFrame(s_biz_payload, s_biz_len);
     }
 
     /* 收到帧说明链路正常 */
@@ -1072,9 +1077,7 @@ void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len)
         s_link_ok = 1;
         s_link_changed = 1;
     }
-
-    if (s_mode == MODE_BIZ)
-        Draw_Biz();
+    /* 不在这里调用 Draw_Biz()，绘制交给 LCDDisplay_Update */
 }
 
 void LCDDisplay_Process(void)
