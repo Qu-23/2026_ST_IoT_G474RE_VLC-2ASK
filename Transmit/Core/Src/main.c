@@ -33,6 +33,7 @@
 #include <string.h>
 #include "ask_tx.h"
 #include "logo.h"
+#include "mickey.h"
 
 /* USER CODE END Includes */
 
@@ -113,7 +114,8 @@ static void PrintCommandList(void)
     printf("V         Scope test frame (payload=0x55)\r\n");
     printf("M<文本>   汉字文本帧发送 (same as T, specialized for Chinese input)\r\n");
     printf("G[0-2]    Send geometric shape (0=circle, 1=square, 2=triangle)\r\n");
-    printf("S         Send embedded logo image (128x128 b/w)\r\n");
+    printf("P[0-1]    Send picture (0=LOGO, 1=Mickey)\r\n");
+    printf("S         Send logo image (legacy, same as P0)\r\n");
     printf("C         Show this command list\r\n");
     printf("========================\r\n");
 }
@@ -880,6 +882,114 @@ static void ProcessCommand(char *line)
             }
             else
                 printf("G FULL\r\n");
+        }
+        break;
+
+    case 'P':
+    case 'p':
+        /* Picture command: P0=LOGO, P1=Mickey, P2.. reserved for future images
+         * Uses same image protocol as S command.
+         * Payload format identical: header(seq=0xFE) + data frames(seq 0..N-1) */
+        {
+            uint8_t pic_id = 0;
+            if (arglen > 0 && arg[0] >= '0' && arg[0] <= '9')
+                pic_id = (uint8_t)(arg[0] - '0');
+
+            const uint8_t *bitmap = NULL;
+            uint16_t img_size = 0;
+            uint8_t img_w_div8 = 0;
+            uint8_t img_h = 0;
+            const char *pic_name = "";
+
+            switch (pic_id)
+            {
+            case 0:
+                bitmap = logo_bitmap;
+                img_size = LOGO_SIZE;
+                img_w_div8 = LOGO_WIDTH / 8;
+                img_h = (uint8_t)LOGO_HEIGHT;
+                pic_name = "LOGO";
+                break;
+            case 1:
+                bitmap = mickey_bitmap;
+                img_size = MICKEY_BITMAP_SIZE;
+                img_w_div8 = MICKEY_BITMAP_WIDTH / 8;
+                img_h = (uint8_t)MICKEY_BITMAP_HEIGHT;
+                pic_name = "Mickey";
+                break;
+            default:
+                printf("P: unknown pic_id=%u (0=LOGO, 1=Mickey)\r\n", pic_id);
+                break;
+            }
+
+            if (bitmap == NULL) break;
+
+            uint8_t total_frames = (uint8_t)((img_size + 63) / 64);
+            printf("P%u: sending %s (%u bytes, %u frames)...\r\n", pic_id, pic_name, img_size, total_frames);
+
+            ASK_TX_FIFO_Clear();
+
+            /* --- Header frame (seq=0xFE) --- */
+            {
+                uint8_t hdr[65];
+                memset(hdr, 0xFF, 65);
+                hdr[0] = 0xFE;
+                hdr[1] = total_frames;
+                hdr[2] = img_w_div8;
+                hdr[3] = img_h;
+                if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, hdr, 65) != 0)
+                {
+                    printf("P FULL at header\r\n");
+                    break;
+                }
+                tx_frame_pending = 1;
+            }
+            while (tx_frame_pending)
+            {
+                if (ASK_TX_FIFO_Count() < 100)
+                    tx_frame_pending = 0;
+                HAL_Delay(2);
+            }
+            for (int i = 0; i < 30; i++)
+                ASK_TX_PushByte(0x55);
+            HAL_Delay(30);
+
+            /* --- Data frames (seq=0..N-1) --- */
+            uint16_t offset = 0;
+            uint8_t frame_count = 0;
+
+            while (offset < img_size)
+            {
+                uint8_t payload[65];
+                uint8_t chunk = (img_size - offset > 64) ? 64 : (uint8_t)(img_size - offset);
+
+                payload[0] = frame_count;
+                memcpy(&payload[1], &bitmap[offset], chunk);
+                if (chunk < 64)
+                    memset(&payload[1 + chunk], 0xFF, 64 - chunk);
+
+                if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, payload, 65) != 0)
+                {
+                    printf("P FULL at frame %u\r\n", frame_count);
+                    break;
+                }
+
+                tx_frame_pending = 1;
+                offset += chunk;
+                frame_count++;
+
+                while (tx_frame_pending)
+                {
+                    if (ASK_TX_FIFO_Count() < 100)
+                        tx_frame_pending = 0;
+                    HAL_Delay(2);
+                }
+                for (int i = 0; i < 30; i++)
+                    ASK_TX_PushByte(0x55);
+                HAL_Delay(30);
+            }
+
+            printf("P%u OK %s frames=%u\r\n", pic_id, pic_name, frame_count);
         }
         break;
 

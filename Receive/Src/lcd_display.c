@@ -211,8 +211,8 @@ static const char *TypeStr(uint8_t type)
         case ASK_TYPE_RAW:     return "RAW";
         case ASK_TYPE_TEXT:    return "TEXT";
         case ASK_TYPE_GRAPHIC:
-            /* 图像帧(有total_frames)显示LOGO，几何图样显示GEO */
-            return (s_image_total_frames > 0) ? "LOGO" : "GEO";
+            /* 图像帧(有total_frames)显示IMG，几何图样显示GEO */
+            return (s_image_total_frames > 0) ? "IMG" : "GEO";
         case ASK_TYPE_AUDIO:   return "AUDIO";
         default:               return "UNK";
     }
