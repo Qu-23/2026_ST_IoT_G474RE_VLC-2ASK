@@ -69,11 +69,12 @@ static uint8_t  s_biz_info_rows = 1;  /* 1=Type+Len same row, 2=Len wrapped to n
 #define IMAGE_WIDTH  128
 #define IMAGE_HEIGHT 128
 #define IMAGE_SIZE   2048
-#define IMAGE_FRAMES 32  /* 2048 / 64 = 32 帧 (seq 0..31) */
+#define IMAGE_FRAMES_MAX 64  /* 最大帧数，支持更大图像 */
 static uint8_t s_image_buf[IMAGE_SIZE];
-static uint8_t s_image_rx_mask[IMAGE_FRAMES];  /* 每帧是否已接收 */
+static uint8_t s_image_rx_mask[IMAGE_FRAMES_MAX]; /* 每帧是否已接收 */
 static uint8_t s_image_complete = 0;
-static uint8_t s_image_rx_count = 0; /* 已接收帧数 */
+static uint8_t s_image_rx_count = 0;     /* 已接收帧数 */
+static uint8_t s_image_total_frames = 0; /* 由头帧动态设定 */
 
 /* 待机动画 */
 static uint8_t  s_anim_idx = 0;
@@ -335,61 +336,73 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
 {
     if (len < 2) return;
 
-    /* 用载荷长度区分：几何图样 len=2，图像帧 len=65 */
+    /* 几何图样：payload = [shape, param], len=2 */
     if (len == 2)
     {
-        /* 几何图样：payload = [shape, param] */
         uint8_t shape = payload[0];
-        s_image_complete = 0;  /* 清除图像模式 */
+        s_image_complete = 0;
 
-        Lcd_fill(0, 32, 128, 112, WHITE);  /* 清除内容区 */
+        Lcd_fill(0, 32, 128, 112, WHITE);
 
         if (shape == 0)
-        {
-            /* 圆：中心 (64,72)，半径 32 */
             DrawCircle(64, 72, 32, BLACK);
-        }
         else if (shape == 1)
-        {
-            /* 方：左上 (32,40)，右下 (96,104) */
             Lcd_fill(32, 40, 96, 104, BLACK);
-        }
         else if (shape == 2)
-        {
-            /* 三角形：顶点 (64,40)，左下 (32,104)，右下 (96,104) */
             DrawTriangle(64, 40, 32, 104, 96, 104, BLACK);
-        }
+        return;
     }
-    else if (len == 65 && payload[0] < IMAGE_FRAMES)
+
+    if (len != 65) return;
+
+    /* 图像头帧：payload = [0xFE, total_frames, bytes_per_row, height, ...] */
+    if (payload[0] == 0xFE)
     {
-        /* Logo 图像帧：payload = [seq, data0..data63] */
+        s_image_total_frames = payload[1];
+        s_image_rx_count = 0;
+        s_image_complete = 0;
+        memset(s_image_rx_mask, 0, sizeof(s_image_rx_mask));
+        /* 显示接收准备 */
+        Lcd_fill(0, 32, 128, 112, WHITE);
+        ShowStr("IMG", 4, 48, COLOR_BIZ_VALUE, WHITE);
+        ShowNum(0, 36, 64, COLOR_OK, WHITE);
+        ShowChar('/', 52, 64, COLOR_BIZ_LABEL, WHITE);
+        ShowNum(s_image_total_frames, 60, 64, COLOR_BIZ_LABEL, WHITE);
+        return;
+    }
+
+    /* 图像数据帧：payload = [seq, data0..data63] */
+    if (payload[0] < IMAGE_FRAMES_MAX)
+    {
         uint8_t seq = payload[0];
         uint16_t offset = (uint16_t)(seq * 64);
 
+        if (offset + 64 > IMAGE_SIZE) return;  /* 越界保护 */
         memcpy(&s_image_buf[offset], &payload[1], 64);
+
         if (s_image_rx_mask[seq] == 0)
         {
             s_image_rx_mask[seq] = 1;
             s_image_rx_count++;
         }
 
-        /* 检查是否所有帧都已接收 */
-        if (s_image_rx_count >= IMAGE_FRAMES)
+        uint8_t total = s_image_total_frames > 0 ? s_image_total_frames : 32;
+
+        if (s_image_rx_count >= total)
         {
             s_image_complete = 1;
             Draw_ImageBuffer();
         }
         else
         {
-            /* 接收中：在内容区显示进度 */
+            /* 接收中：显示进度 */
             Lcd_fill(0, 32, 128, 112, WHITE);
             ShowStr("IMG", 4, 48, COLOR_BIZ_VALUE, WHITE);
             ShowNum(s_image_rx_count, 36, 64, COLOR_OK, WHITE);
             ShowChar('/', 52, 64, COLOR_BIZ_LABEL, WHITE);
-            ShowNum(IMAGE_FRAMES, 60, 64, COLOR_BIZ_LABEL, WHITE);
-            /* 简易进度条 y=88 */
+            ShowNum(total, 60, 64, COLOR_BIZ_LABEL, WHITE);
             {
-                uint16_t bar_w = (uint16_t)(s_image_rx_count * 120 / IMAGE_FRAMES);
+                uint16_t bar_w = (uint16_t)(s_image_rx_count * 120 / total);
                 Lcd_fill(4, 88, 4 + bar_w, 96, COLOR_OK);
             }
         }
@@ -1048,6 +1061,7 @@ void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len)
     if (type != ASK_TYPE_GRAPHIC || len == 2)
     {
         s_image_complete = 0;
+        s_image_total_frames = 0;
         memset(s_image_rx_mask, 0, sizeof(s_image_rx_mask));
         s_image_rx_count = 0;
     }

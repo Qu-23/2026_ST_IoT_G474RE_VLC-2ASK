@@ -884,16 +884,45 @@ static void ProcessCommand(char *line)
 
     case 'S':
     case 's':
-        /* Send logo image, split into frames (64 bytes each + 1 seq byte).
-         * 2048 bytes / 64 per frame = 32 frames (seq 0..31).
-         * Wait for each frame's FIFO to drain before sending next.
-         * NOTE: do NOT push idle 0x55 while tx_frame_pending==1,
-         * it corrupts the frame data in FIFO and causes CRC failure on RX. */
+        /* Send logo image with image protocol:
+         *   Frame 0 (header): payload = [0xFE, total_frames, width/8, height, 0xFF...]
+         *   Frame 1..N (data): payload = [seq, data0..data63]
+         * Between frames: fill idle 0x55 to keep RX sync (main loop is blocked).
+         * NOTE: only push 0x55 when tx_frame_pending==0 to avoid FIFO corruption. */
         {
             uint8_t total_frames = (uint8_t)((LOGO_SIZE + 63) / 64);
             printf("S: sending logo (%u bytes, %u frames)...\r\n", LOGO_SIZE, total_frames);
 
             ASK_TX_FIFO_Clear();
+
+            /* --- Header frame (seq=0xFE) --- */
+            {
+                uint8_t hdr[65];
+                memset(hdr, 0xFF, 65);
+                hdr[0] = 0xFE;         /* header marker */
+                hdr[1] = total_frames;  /* total data frames */
+                hdr[2] = LOGO_WIDTH / 8; /* bytes per row */
+                hdr[3] = (uint8_t)LOGO_HEIGHT;
+                if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, hdr, 65) != 0)
+                {
+                    printf("S FULL at header\r\n");
+                    break;
+                }
+                tx_frame_pending = 1;
+            }
+            /* Wait + idle fill */
+            while (tx_frame_pending)
+            {
+                if (ASK_TX_FIFO_Count() < 100)
+                    tx_frame_pending = 0;
+                HAL_Delay(2);
+            }
+            /* Push idle 0x55 (safe: pending==0) */
+            for (int i = 0; i < 30; i++)
+                ASK_TX_PushByte(0x55);
+            HAL_Delay(30);
+
+            /* --- Data frames (seq=0..N-1) --- */
             uint16_t offset = 0;
             uint8_t frame_count = 0;
 
@@ -902,10 +931,8 @@ static void ProcessCommand(char *line)
                 uint8_t payload[65];
                 uint8_t chunk = (LOGO_SIZE - offset > 64) ? 64 : (uint8_t)(LOGO_SIZE - offset);
 
-                payload[0] = frame_count;  /* frame sequence number */
+                payload[0] = frame_count;
                 memcpy(&payload[1], &logo_bitmap[offset], chunk);
-
-                /* Pad remaining bytes with 0xFF (white) */
                 if (chunk < 64)
                     memset(&payload[1 + chunk], 0xFF, 64 - chunk);
 
@@ -919,15 +946,17 @@ static void ProcessCommand(char *line)
                 offset += chunk;
                 frame_count++;
 
-                /* Wait for this frame's FIFO data to drain (frame fully sent) */
+                /* Wait for frame to finish */
                 while (tx_frame_pending)
                 {
                     if (ASK_TX_FIFO_Count() < 100)
                         tx_frame_pending = 0;
-                    HAL_Delay(5);
+                    HAL_Delay(2);
                 }
-                /* Brief gap between frames for RX processing */
-                HAL_Delay(20);
+                /* Push idle 0x55 between frames (safe: pending==0) */
+                for (int i = 0; i < 30; i++)
+                    ASK_TX_PushByte(0x55);
+                HAL_Delay(30);
             }
 
             printf("S OK frames=%u\r\n", frame_count);
