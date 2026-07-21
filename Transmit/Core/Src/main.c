@@ -80,13 +80,22 @@ extern DMA_HandleTypeDef hdma_dac2_ch1;  // actual DMA handle for DAC2, defined 
 static char     cmd_line[64];
 static uint8_t  cmd_len = 0;
 
-/*--- Image stream receive (I command) state --------------------------------*/
-static uint8_t  img_stream_active = 0;    /* 1 = 正在从串口接收图像数据     */
-static uint8_t  img_stream_phase = 0;     /* 0=等头, 1=等数据帧             */
-static uint8_t  img_stream_buf[65];       /* 当前帧接收缓冲                 */
-static uint8_t  img_stream_pos = 0;       /* 当前帧已接收字节数             */
-static uint8_t  img_stream_total = 0;     /* 数据帧总数（来自头帧）         */
-static uint8_t  img_stream_count = 0;     /* 已发送数据帧计数               */
+/*--- Image stream receive state machine (non-blocking) --------------------*
+ * 收到 I 命令或自动检测到 0xFE 开头时进入图像流模式                   *
+ * 状态: IDLE → HDR(收4B头) → HDR_WAIT(等FIFO排空)                    *
+ *     → DATA(收65B帧) → DATA_WAIT(等FIFO排空) → ... → IDLE           *
+ * 全程不调用 HAL_Delay，UART 字节持续被消费，不丢帧                    */
+#define IS_IDLE      0
+#define IS_HDR      1   /* 正在收4字节图像头 */
+#define IS_HDR_WAIT 2   /* 头帧已推入FIFO，等排空 */
+#define IS_DATA     3   /* 正在收65字节数据帧 */
+#define IS_DATA_WAIT 4  /* 数据帧已推入FIFO，等排空 */
+static uint8_t  img_st = IS_IDLE;
+static uint8_t  img_buf[65];           /* 帧接收缓冲 */
+static uint8_t  img_pos = 0;           /* 当前帧已接收字节数 */
+static uint8_t  img_total = 0;         /* 数据帧总数 */
+static uint8_t  img_cnt = 0;           /* 已发送数据帧计数 */
+static uint32_t img_wait_start = 0;    /* FIFO等待起始tick */
 
 /*--- Audio DEMO state ------------------------------------------------------*/
 static uint8_t  audio_demo_active = 0;    /* 1 = stream AUDIO frames       */
@@ -125,7 +134,7 @@ static void PrintCommandList(void)
     printf("G[0-2]    Send geometric shape (0=circle, 1=square, 2=triangle)\r\n");
     printf("P[0-2]    Send picture (0=LOGO, 1=Mickey, 2=Nuannuan)\r\n");
     printf("S         Send logo image (legacy, same as P0)\r\n");
-    printf("I         Image stream mode (receive .bin from UART, forward to 2ASK)\r\n");
+    printf("I         Image stream mode (send .bin directly, auto-detected)\r\n");
     printf("C         Show this command list\r\n");
     printf("========================\r\n");
 }
@@ -596,92 +605,75 @@ int main(void)
 		{
 			uint8_t rx_byte = UART_GetRxByte();
 
-			/* --- Image stream mode: 逐帧接收并转发 --- */
-			if (img_stream_active)
+			/* ── 图像流状态机（非阻塞，不丢帧） ── */
+			if (img_st != IS_IDLE)
 			{
-				img_stream_buf[img_stream_pos++] = rx_byte;
+				img_buf[img_pos++] = rx_byte;
 
-				if (img_stream_phase == 0)
+				if (img_st == IS_HDR)
 				{
-					/* Phase 0: 等待4字节图像头 */
-					if (img_stream_pos >= 4)
+					/* 收4字节图像头 */
+					if (img_pos >= 4)
 					{
-						img_stream_total = img_stream_buf[1];  /* total_frames */
-						/* 封装头帧发送 */
+						img_total = img_buf[1];
+						/* 封装头帧: [0xFE, total, w/8, h, 0xFF...] */
 						uint8_t hdr[65];
 						memset(hdr, 0xFF, 65);
 						hdr[0] = 0xFE;
-						hdr[1] = img_stream_buf[1];
-						hdr[2] = img_stream_buf[2];
-						hdr[3] = img_stream_buf[3];
+						hdr[1] = img_buf[1];
+						hdr[2] = img_buf[2];
+						hdr[3] = img_buf[3];
 
 						ASK_TX_FIFO_Clear();
 						if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, hdr, 65) == 0)
 						{
 							tx_frame_pending = 1;
-							printf("I:HDR frames=%u\r\n", img_stream_total);
+							printf("I:HDR frames=%u\r\n", img_total);
+							img_st = IS_HDR_WAIT;
+							img_wait_start = HAL_GetTick();
 						}
 						else
 						{
 							printf("I:HDR FULL\r\n");
-							img_stream_active = 0;
-							continue;
+							img_st = IS_IDLE;
 						}
-						/* 等待头帧发完 */
-						while (tx_frame_pending)
-						{
-							if (ASK_TX_FIFO_Count() < 100)
-								tx_frame_pending = 0;
-						}
-						for (int i = 0; i < 30; i++)
-							ASK_TX_PushByte(0x55);
-						HAL_Delay(30);
-
-						img_stream_phase = 1;
-						img_stream_pos = 0;
-						img_stream_count = 0;
 					}
 				}
-				else /* phase == 1 */
+				else if (img_st == IS_DATA)
 				{
-					/* Phase 1: 等待65字节数据帧 */
-					if (img_stream_pos >= 65)
+					/* 收65字节数据帧 */
+					if (img_pos >= 65)
 					{
-						if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, img_stream_buf, 65) == 0)
+						if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, img_buf, 65) == 0)
 						{
 							tx_frame_pending = 1;
-							img_stream_count++;
+							img_cnt++;
+							img_st = IS_DATA_WAIT;
+							img_wait_start = HAL_GetTick();
 						}
 						else
 						{
-							printf("I:FULL at %u\r\n", img_stream_count);
-							img_stream_active = 0;
-							continue;
-						}
-
-						/* 等待帧发完 */
-						while (tx_frame_pending)
-						{
-							if (ASK_TX_FIFO_Count() < 100)
-								tx_frame_pending = 0;
-						}
-						for (int i = 0; i < 30; i++)
-							ASK_TX_PushByte(0x55);
-						HAL_Delay(30);
-
-						img_stream_pos = 0;
-
-						if (img_stream_count >= img_stream_total)
-						{
-							printf("I:OK frames=%u\r\n", img_stream_count);
-							img_stream_active = 0;
+							printf("I:FULL at %u\r\n", img_cnt);
+							img_st = IS_IDLE;
 						}
 					}
 				}
-				continue;  /* I 模式下字节不进入命令行 */
+				/* IS_HDR_WAIT / IS_DATA_WAIT: 不收新字节，只等FIFO排空 */
+				continue;
 			}
 
-			/* --- 正常命令行模式 --- */
+			/* ── 自动检测: 0xFE 开头 = bin文件图像头 ── */
+			if (rx_byte == 0xFE && cmd_len == 0)
+			{
+				img_st = IS_HDR;
+				img_pos = 1;
+				img_buf[0] = 0xFE;
+				img_cnt = 0;
+				printf("I:AUTO detected .bin header\r\n");
+				continue;
+			}
+
+			/* ── 正常命令行模式 ── */
 			char c = (char)rx_byte;
 			if (c == '\r') continue;            /* ignore CR */
 			if (c == '\n')
@@ -710,6 +702,33 @@ int main(void)
 		if (tx_frame_pending && ASK_TX_FIFO_Count() < 100)
 		{
 			tx_frame_pending = 0;
+		}
+
+		// --- 2c. Image stream: FIFO排空后推进状态机（非阻塞） ---
+		if (img_st == IS_HDR_WAIT && !tx_frame_pending)
+		{
+			/* 头帧已发完，加idle间隔后转入数据帧接收 */
+			for (int i = 0; i < 30; i++)
+				ASK_TX_PushByte(0x55);
+			img_st = IS_DATA;
+			img_pos = 0;
+		}
+		else if (img_st == IS_DATA_WAIT && !tx_frame_pending)
+		{
+			/* 数据帧已发完，加idle间隔 */
+			for (int i = 0; i < 30; i++)
+				ASK_TX_PushByte(0x55);
+			img_pos = 0;
+
+			if (img_cnt >= img_total)
+			{
+				printf("I:OK frames=%u\r\n", img_cnt);
+				img_st = IS_IDLE;
+			}
+			else
+			{
+				img_st = IS_DATA;
+			}
 		}
 
 		// --- 3. Audio DEMO: 每 100 ms 发送一帧 AUDIO ---
@@ -1181,17 +1200,12 @@ static void ProcessCommand(char *line)
 
     case 'I':
     case 'i':
-        /* Image stream: 进入串口图像接收模式
-         * 上位机通过串口发送 .bin 文件（4B头 + 2048B数据）
-         * TX 逐帧读取并转发到 2ASK 通道：
-         *   Phase 0: 收4字节头 → 封装头帧(seq=0xFE)发送
-         *   Phase 1: 循环收65字节数据帧 → 转发到 2ASK */
+        /* Image stream: 显式进入图像接收模式 */
         {
-            img_stream_active = 1;
-            img_stream_phase = 0;
-            img_stream_pos = 0;
-            img_stream_count = 0;
-            printf("I:READY send .bin file now\r\n");
+            img_st = IS_HDR;
+            img_pos = 0;
+            img_cnt = 0;
+            printf("I:READY send .bin now\r\n");
         }
         break;
 

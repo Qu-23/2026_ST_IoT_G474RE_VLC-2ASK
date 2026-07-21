@@ -32,10 +32,20 @@ except ImportError:
     print("需要 Pillow 库: pip install Pillow")
     sys.exit(1)
 
-# 默认输出目录
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# 脚本在 tools/ 子目录下，向上一级找工程根目录
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR) if os.path.basename(SCRIPT_DIR) == "tools" else SCRIPT_DIR
+# 默认输出目录：兼容 PyInstaller 打包
+def _get_project_root():
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        if os.path.basename(exe_dir).lower() == 'tools':
+            return os.path.dirname(exe_dir)
+        return exe_dir
+    else:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if os.path.basename(script_dir) == "tools":
+            return os.path.dirname(script_dir)
+        return script_dir
+
+PROJECT_ROOT = _get_project_root()
 DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "Pic_dir_output")
 
 IMG_WIDTH = 128

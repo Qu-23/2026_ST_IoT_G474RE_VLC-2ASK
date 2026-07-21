@@ -33,9 +33,24 @@ FRAME_DATA = 64
 TOTAL_FRAMES = BITMAP_SZ // FRAME_DATA
 
 # 输出目录：与工程根目录的 Pic_dir_output 对齐
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# 如果脚本在 tools/ 子目录下，向上一级找工程根
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR) if os.path.basename(SCRIPT_DIR) == "tools" else SCRIPT_DIR
+# PyInstaller 打包后 __file__ 指向 temp 目录，必须用 sys.executable 定位 exe
+def _get_project_root():
+    """获取工程根目录（兼容 .py 直接运行和 PyInstaller .exe）"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包的 exe：exe 所在目录的上一级
+        exe_dir = os.path.dirname(sys.executable)
+        # 如果 exe 在 tools/ 下，上一级就是工程根；否则本身就是工程根
+        if os.path.basename(exe_dir).lower() == 'tools':
+            return os.path.dirname(exe_dir)
+        return exe_dir
+    else:
+        # .py 直接运行
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if os.path.basename(script_dir) == "tools":
+            return os.path.dirname(script_dir)
+        return script_dir
+
+PROJECT_ROOT = _get_project_root()
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "Pic_dir_output")
 
 # ─── 紫群青色主题 ───
@@ -104,6 +119,7 @@ def list_ports():
 
 
 def serial_send(bin_data, port, baud, log, prog):
+    """直接发送 .bin 文件到 TX（TX 自动检测 0xFE 头进入图像模式）"""
     try:
         import serial
     except ImportError:
@@ -115,29 +131,25 @@ def serial_send(bin_data, port, baud, log, prog):
         s.reset_input_buffer()
 
         log(f"连接 {port} @ {baud}bps")
-        s.write(b'I\n')
+        log("直接发送 .bin 数据（TX 自动检测图像头）")
 
-        t0 = time.time()
-        while time.time() - t0 < 3:
-            if s.in_waiting:
-                ln = s.readline().decode('ascii', errors='replace').strip()
-                log(f"TX> {ln}")
-                if 'READY' in ln:
-                    break
-        else:
-            log("[错误] TX 未回复 READY")
-            s.close()
-            return False
+        # 发送空行清空 TX 命令缓冲，然后直接发 bin 数据
+        s.write(b'\n')
+        time.sleep(0.05)
 
+        # 发送4字节图像头
         hdr = bin_data[:4]
         log(f"发送头: FE {hdr[1]:02X} {hdr[2]:02X} {hdr[3]:02X}")
         s.write(hdr)
         time.sleep(0.1)
-        if s.in_waiting:
+
+        # 读取 TX 回复
+        while s.in_waiting:
             ln = s.readline().decode('ascii', errors='replace').strip()
             if ln:
                 log(f"TX> {ln}")
 
+        # 逐帧发送65字节数据
         n = hdr[1]
         data = bin_data[4:]
         for seq in range(n):
@@ -148,13 +160,15 @@ def serial_send(bin_data, port, baud, log, prog):
                 frame = bytes([seq]) + chunk + b'\xFF' * (FRAME_DATA - len(chunk))
             s.write(frame)
             prog(seq + 1, n)
-            time.sleep(0.1)
+            # TX 非阻塞状态机处理，给足够时间
+            time.sleep(0.15)
             while s.in_waiting:
                 ln = s.readline().decode('ascii', errors='replace').strip()
                 if ln:
                     log(f"TX> {ln}")
 
-        time.sleep(0.3)
+        # 等待最终回复
+        time.sleep(0.5)
         while s.in_waiting:
             ln = s.readline().decode('ascii', errors='replace').strip()
             if ln:
