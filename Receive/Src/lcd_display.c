@@ -65,6 +65,14 @@ static uint32_t s_biz_frame_cnt = 0;
 static uint8_t  s_biz_has_data = 0;
 static uint8_t  s_biz_info_rows = 1;  /* 1=Type+Len same row, 2=Len wrapped to next line */
 
+/* 图像接收缓存 */
+#define IMAGE_WIDTH  128
+#define IMAGE_HEIGHT 128
+#define IMAGE_SIZE   2048
+static uint8_t s_image_buf[IMAGE_SIZE];
+static uint8_t s_image_rx_mask[33];  /* 每帧是否已接收 */
+static uint8_t s_image_complete = 0;
+
 /* 待机动画 */
 static uint8_t  s_anim_idx = 0;
 static const char s_anim_chars[] = "|/-\\";
@@ -241,6 +249,143 @@ static void Draw_BizInfo(void)
     }
 }
 
+/*============================================================================*
+ *                          图像渲染辅助函数                                   *
+ *============================================================================*/
+/* 画线（Bresenham算法） */
+static void DrawLine(int x0, int y0, int x1, int y1, uint16_t color)
+{
+    int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
+    int dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+
+    while (1)
+    {
+        Gui_DrawPoint(x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 < dx) { err += dx; y0 += sy; }
+    }
+}
+
+/* 画圆（中点圆算法） */
+static void DrawCircle(int cx, int cy, int r, uint16_t color)
+{
+    int x = 0, y = r;
+    int d = 3 - 2 * r;
+    while (x <= y)
+    {
+        Gui_DrawPoint(cx + x, cy + y, color);
+        Gui_DrawPoint(cx - x, cy + y, color);
+        Gui_DrawPoint(cx + x, cy - y, color);
+        Gui_DrawPoint(cx - x, cy - y, color);
+        Gui_DrawPoint(cx + y, cy + x, color);
+        Gui_DrawPoint(cx - y, cy + x, color);
+        Gui_DrawPoint(cx + y, cy - x, color);
+        Gui_DrawPoint(cx - y, cy - x, color);
+        if (d < 0)
+            d += 4 * x + 6;
+        else
+        {
+            d += 4 * (x - y) + 10;
+            y--;
+        }
+        x++;
+    }
+}
+
+/* 画三角形（三条线） */
+static void DrawTriangle(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t color)
+{
+    DrawLine(x0, y0, x1, y1, color);
+    DrawLine(x1, y1, x2, y2, color);
+    DrawLine(x2, y2, x0, y0, color);
+}
+
+/* 渲染缓存中的图像 */
+static void Draw_ImageBuffer(void)
+{
+    Lcd_fill(0, 0, 128, 128, WHITE);  /* 清屏 */
+
+    for (int row = 0; row < 128; row++)
+    {
+        for (int col_byte = 0; col_byte < 16; col_byte++)
+        {
+            uint8_t byte = s_image_buf[row * 16 + col_byte];
+            for (int bit = 0; bit < 8; bit++)
+            {
+                uint8_t pixel = (byte >> (7 - bit)) & 1;  /* MSB first */
+                uint16_t x = (uint16_t)(col_byte * 8 + bit);
+                uint16_t y = (uint16_t)row;
+                /* 0=黑点，1=白点（不画） */
+                if (pixel == 0)
+                    Gui_DrawPoint(x, y, BLACK);
+            }
+        }
+    }
+}
+
+/* 处理 GRAPHIC 帧 */
+static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
+{
+    if (len < 2) return;  /* 至少 shape + param 或 seq */
+
+    uint8_t first = payload[0];
+
+    if (first <= 2)
+    {
+        /* 几何图样（shape 0-2） */
+        uint8_t shape = first;
+
+        Lcd_fill(0, 32, 128, 112, WHITE);  /* 清除内容区 */
+
+        if (shape == 0)
+        {
+            /* 圆：中心 (64,72)，半径 32 */
+            DrawCircle(64, 72, 32, BLACK);
+        }
+        else if (shape == 1)
+        {
+            /* 方：左上 (32,40)，右下 (96,104) */
+            Lcd_fill(32, 40, 96, 104, BLACK);
+        }
+        else if (shape == 2)
+        {
+            /* 三角形：顶点 (64,40)，左下 (32,104)，右下 (96,104) */
+            DrawTriangle(64, 40, 32, 104, 96, 104, BLACK);
+        }
+    }
+    else if (len == 65 && first < 33)
+    {
+        /* Logo 图像帧（seq 0-32） */
+        uint8_t seq = first;
+        uint16_t offset = (uint16_t)(seq * 64);
+
+        memcpy(&s_image_buf[offset], &payload[1], 64);
+        s_image_rx_mask[seq] = 1;
+
+        /* 检查是否所有帧都已接收 */
+        uint8_t all_rx = 1;
+        for (int i = 0; i < 33; i++)
+        {
+            if (s_image_rx_mask[i] == 0)
+            {
+                all_rx = 0;
+                break;
+            }
+        }
+
+        if (all_rx)
+        {
+            s_image_complete = 1;
+            Draw_ImageBuffer();
+        }
+    }
+}
+
 static void Draw_BizContent(void)
 {
     /* Content area: y=48 (Len same row, 4 rows) or y=64 (Len wrapped, 3 rows) */
@@ -283,6 +428,11 @@ static void Draw_BizContent(void)
                 if (col >= 16) { col = 0; row++; }
             }
         }
+    }
+    else if (s_biz_type == ASK_TYPE_GRAPHIC)
+    {
+        /* GRAPHIC: 几何图样或Logo图像 */
+        ProcessGraphicFrame(s_biz_payload, s_biz_len);
     }
     else
     {

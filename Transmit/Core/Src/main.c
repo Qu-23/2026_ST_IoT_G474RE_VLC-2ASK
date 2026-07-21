@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "ask_tx.h"
+#include "logo.h"
 
 /* USER CODE END Includes */
 
@@ -111,6 +112,8 @@ static void PrintCommandList(void)
     printf("T<string> TEXT frame (ASCII + UTF-8 Chinese, auto GB2312)\r\n");
     printf("V         Scope test frame (payload=0x55)\r\n");
     printf("M<文本>   汉字文本帧发送 (same as T, specialized for Chinese input)\r\n");
+    printf("G[0-2]    Send geometric shape (0=circle, 1=square, 2=triangle)\r\n");
+    printf("S         Send embedded logo image (128x128 b/w)\r\n");
     printf("C         Show this command list\r\n");
     printf("========================\r\n");
 }
@@ -851,6 +854,73 @@ static void ProcessCommand(char *line)
             }
             else
                 printf("M FULL\r\n");
+        }
+        break;
+
+    case 'G':
+    case 'g':
+        /* Geometric shape command.
+         * G0 or G  -> circle (default)
+         * G1       -> square
+         * G2       -> triangle
+         * Payload: [shape, param] (param reserved, fill 0) */
+        {
+            uint8_t shape = 0;  /* default: circle */
+            uint8_t param = 0;
+            if (arglen > 0 && arg[0] >= '0' && arg[0] <= '2')
+                shape = (uint8_t)(arg[0] - '0');
+
+            uint8_t payload[2] = { shape, param };
+            ASK_TX_FIFO_Clear();
+            if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, payload, 2) == 0)
+            {
+                tx_frame_pending = 1;
+                printf("G OK shape=%u\r\n", shape);
+            }
+            else
+                printf("G FULL\r\n");
+        }
+        break;
+
+    case 'S':
+    case 's':
+        /* Send logo image, split into 33 frames (64 bytes each + seq number).
+         * Wait for each frame to complete before sending the next. */
+        {
+            printf("S: sending logo (%u bytes, 33 frames)...\r\n", LOGO_SIZE);
+
+            ASK_TX_FIFO_Clear();
+            uint16_t offset = 0;
+            uint8_t frame_count = 0;
+
+            while (offset < LOGO_SIZE)
+            {
+                uint8_t payload[65];
+                uint8_t chunk = (LOGO_SIZE - offset > 64) ? 64 : (uint8_t)(LOGO_SIZE - offset);
+
+                payload[0] = frame_count;  /* frame sequence number */
+                memcpy(&payload[1], &logo_bitmap[offset], chunk);
+
+                /* Pad remaining bytes with 0xFF (white) */
+                if (chunk < 64)
+                    memset(&payload[1 + chunk], 0xFF, 64 - chunk);
+
+                if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, payload, 65) != 0)
+                {
+                    printf("S FULL at frame %u\r\n", frame_count);
+                    break;
+                }
+
+                tx_frame_pending = 1;
+                offset += chunk;
+                frame_count++;
+
+                /* Wait for frame to complete (poll tx_frame_pending) */
+                while (tx_frame_pending)
+                    HAL_Delay(10);
+            }
+
+            printf("S OK frames=%u\r\n", frame_count);
         }
         break;
 
