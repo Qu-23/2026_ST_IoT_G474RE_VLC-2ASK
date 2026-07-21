@@ -1,12 +1,9 @@
-# =============================================================================
 # Keil MDK-ARM build artifacts
-# =============================================================================
 *.o
 *.crf
 *.d
 *.axf
 *.hex
-*.bin
 *.map
 *.lnp
 *.sct
@@ -18,14 +15,17 @@
 *.build_log*.htm
 build_log.htm
 
-# Keil user-specific options (keep .uvprojx project file, ignore user state)
+# Keil user-specific options
 *.uvoptx
 *.uvguix.*
 *.scvd
 
-# =============================================================================
-# GCC / Makefile build artifacts (Transmit/Debug)
-# =============================================================================
+# Keil firmware binary (not Pic_dir_output)
+/*.bin
+Receive/*.bin
+Transmit/*.bin
+
+# GCC / Makefile build artifacts
 Debug/
 objects.list
 objects.mk
@@ -33,17 +33,18 @@ sources.mk
 subdir.mk
 makefile
 
-# =============================================================================
+# PyInstaller
+build/
+dist/
+*.spec
+
 # Misc
-# =============================================================================
 *.bak
 *.log
 *.tmp
 ~$*
 Thumbs.db
 
-# =============================================================================
 # Python cache
-# =============================================================================
 __pycache__/
 *.pyc
