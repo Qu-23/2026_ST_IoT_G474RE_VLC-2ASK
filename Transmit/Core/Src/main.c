@@ -434,13 +434,14 @@ static const utf8_gb_t utf8_gb_table[] = {
     {{0xE8,0xBF,0x90},{0xD4,0xCB}},  /* 运 */
     {{0xE5,0x81,0xA5},{0xBD,0xA1}},  /* 健 */
     {{0xE5,0xBA,0xB7},{0xBF,0xB5}},  /* 康 */
+    {{0xE4,0xB8,0x96},{0xCA,0xC0}},  /* 世 */
 };
 #define UTF8_GB_TABLE_SIZE  (sizeof(utf8_gb_table) / sizeof(utf8_gb_table[0]))
 
 /* 把 UTF-8 字节流转换为 GB2312 字节流。
  * - ASCII (<0x80) 原样保留
- * - 3字节 UTF-8 汉字 → 2字节 GB2312（查表，未找到则替换为 '?'）
- * - 其他非法字节替换为 '?'
+ * - 3字节 UTF-8 汉字 → 2字节 GB2312（查表，未找到则替换为全角'？'）
+ * - 其他非法字节替换为全角'？'
  * 返回输出字节数。 */
 static uint16_t TranscodeUTF8toGB2312(const char *in, uint16_t in_len,
                                        uint8_t *out, uint16_t max_out)
@@ -458,7 +459,7 @@ static uint16_t TranscodeUTF8toGB2312(const char *in, uint16_t in_len,
         else if ((b & 0xE0) == 0xC0 && i + 1 < in_len)
         {
             /* 2-byte UTF-8 (U+0080..U+07FF): not a Chinese char, skip as '?' */
-            if (o < max_out) out[o++] = '?';
+            if (o + 1 < max_out) { out[o++] = 0xA3; out[o++] = 0xBF; }
             i += 2;
         }
         else if ((b & 0xF0) == 0xE0 && i + 2 < in_len)
@@ -481,13 +482,13 @@ static uint16_t TranscodeUTF8toGB2312(const char *in, uint16_t in_len,
                     break;
                 }
             }
-            if (!found && o < max_out) out[o++] = '?';
+            if (!found && o + 1 < max_out) { out[o++] = 0xA3; out[o++] = 0xBF; }
             i += 3;
         }
         else
         {
             /* invalid byte */
-            out[o++] = '?';
+            if (o + 1 < max_out) { out[o++] = 0xA3; out[o++] = 0xBF; }
             i++;
         }
     }
