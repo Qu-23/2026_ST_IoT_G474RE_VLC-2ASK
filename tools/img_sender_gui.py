@@ -35,20 +35,25 @@ TOTAL_FRAMES = BITMAP_SZ // FRAME_DATA
 # 输出目录：与工程根目录的 Pic_dir_output 对齐
 # PyInstaller 打包后 __file__ 指向 temp 目录，必须用 sys.executable 定位 exe
 def _get_project_root():
-    """获取工程根目录（兼容 .py 直接运行和 PyInstaller .exe）"""
+    """获取工程根目录（兼容 .py 直接运行和 PyInstaller .exe）
+    从 exe 或脚本位置向上遍历目录树，查找包含 Pic_dir_output 的工程根"""
     if getattr(sys, 'frozen', False):
-        # PyInstaller 打包的 exe：exe 所在目录的上一级
-        exe_dir = os.path.dirname(sys.executable)
-        # 如果 exe 在 tools/ 下，上一级就是工程根；否则本身就是工程根
-        if os.path.basename(exe_dir).lower() == 'tools':
-            return os.path.dirname(exe_dir)
-        return exe_dir
+        start = os.path.dirname(sys.executable)
     else:
-        # .py 直接运行
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        if os.path.basename(script_dir) == "tools":
-            return os.path.dirname(script_dir)
-        return script_dir
+        start = os.path.dirname(os.path.abspath(__file__))
+
+    # 向上遍历最多10级目录，查找 Pic_dir_output
+    d = start
+    for _ in range(10):
+        if os.path.isdir(os.path.join(d, "Pic_dir_output")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:  # 已到根目录
+            break
+        d = parent
+
+    # 回退到起始目录
+    return start
 
 PROJECT_ROOT = _get_project_root()
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "Pic_dir_output")
@@ -119,56 +124,56 @@ def list_ports():
 
 
 def serial_send(bin_data, port, baud, log, prog):
-    """直接发送 .bin 文件到 TX（TX 自动检测 0xFE 头进入图像模式）"""
+    """直接发送 .bin 文件原始字节到 TX（TX 先缓存再逐帧转发2ASK）"""
     try:
         import serial
     except ImportError:
         log("[错误] pip install pyserial")
         return False
+
+    # 尝试打开串口，PermissionError时自动重试3次
+    s = None
+    for attempt in range(1, 4):
+        try:
+            s = serial.Serial(port, baud, timeout=2)
+            break
+        except serial.SerialException as e:
+            if "PermissionError" in str(e) or "拒绝访问" in str(e) or "Permission" in str(e):
+                log(f"[重试 {attempt}/3] 串口 {port} 被占用，请关闭串口助手...")
+                if attempt < 3:
+                    time.sleep(2)
+                else:
+                    log("[错误] 串口仍被占用，请关闭串口助手后重试")
+                    return False
+            else:
+                log(f"[错误] {e}")
+                return False
+
     try:
-        s = serial.Serial(port, baud, timeout=2)
         time.sleep(0.1)
         s.reset_input_buffer()
 
         log(f"连接 {port} @ {baud}bps")
-        log("直接发送 .bin 数据（TX 自动检测图像头）")
+        log(f"发送 .bin 文件 ({len(bin_data)}B)...")
 
-        # 发送空行清空 TX 命令缓冲，然后直接发 bin 数据
+        # 发送空行清空 TX 命令缓冲
         s.write(b'\n')
         time.sleep(0.05)
 
-        # 发送4字节图像头
-        hdr = bin_data[:4]
-        log(f"发送头: FE {hdr[1]:02X} {hdr[2]:02X} {hdr[3]:02X}")
-        s.write(hdr)
-        time.sleep(0.1)
+        # 直接发送 .bin 文件原始字节
+        # TX 端 IS_RECV 模式会全部缓存到 img_file_buf，收完后自动进入 IS_SEND 逐帧转发
+        # 分块发送避免单次 write 过大，块间短暂间隔让 TX 主循环有时间消费
+        CHUNK = 256
+        total = len(bin_data)
+        for i in range(0, total, CHUNK):
+            end = min(i + CHUNK, total)
+            s.write(bin_data[i:end])
+            prog(end, total)
+            # 短暂间隔让 TX 消费 UART 字节（921600bps 下 256B≈2.8ms）
+            time.sleep(0.01)
 
-        # 读取 TX 回复
-        while s.in_waiting:
-            ln = s.readline().decode('ascii', errors='replace').strip()
-            if ln:
-                log(f"TX> {ln}")
-
-        # 逐帧发送65字节数据
-        n = hdr[1]
-        data = bin_data[4:]
-        for seq in range(n):
-            off = seq * FRAME_DATA
-            chunk = data[off:off + FRAME_DATA]
-            frame = bytes([seq]) + chunk
-            if len(chunk) < FRAME_DATA:
-                frame = bytes([seq]) + chunk + b'\xFF' * (FRAME_DATA - len(chunk))
-            s.write(frame)
-            prog(seq + 1, n)
-            # TX 非阻塞状态机处理，给足够时间
-            time.sleep(0.15)
-            while s.in_waiting:
-                ln = s.readline().decode('ascii', errors='replace').strip()
-                if ln:
-                    log(f"TX> {ln}")
-
-        # 等待最终回复
-        time.sleep(0.5)
+        # 等待 TX 处理完毕
+        time.sleep(1.0)
         while s.in_waiting:
             ln = s.readline().decode('ascii', errors='replace').strip()
             if ln:
@@ -179,6 +184,11 @@ def serial_send(bin_data, port, baud, log, prog):
         return True
     except Exception as e:
         log(f"[错误] {e}")
+        if s:
+            try:
+                s.close()
+            except Exception:
+                pass
         return False
 
 
@@ -464,6 +474,8 @@ class App:
             f.write(self.bindata)
         self.log(f"保存: {p}")
         self.st_var.set(f"已保存 → {p}")
+        if not p.startswith(OUTPUT_DIR):
+            self.log(f"[注意] 输出目录: {OUTPUT_DIR}")
 
     # ── 发送 ──
     def _send(self):

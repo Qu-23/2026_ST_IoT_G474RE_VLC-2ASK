@@ -486,13 +486,9 @@ static void Draw_BizContent(void)
         }
         else if (s_image_total_frames > 0)
         {
-            /* 图像接收进度 */
+            /* 图像接收中：仅画 IMG 标签（Loading动画由Draw_Biz管理） */
             ShowStr("IMG", 4, 48, COLOR_BIZ_VALUE, WHITE);
-            ShowNum(s_image_rx_count, 36, 64, COLOR_OK, WHITE);
-            ShowChar('/', 52, 64, COLOR_BIZ_LABEL, WHITE);
-            ShowNum(s_image_total_frames, 60, 64, COLOR_BIZ_LABEL, WHITE);
-            uint16_t bar_w = (uint16_t)(s_image_rx_count * 120 / s_image_total_frames);
-            Lcd_fill(4, 88, 4 + bar_w, 96, COLOR_OK);
+            ShowStr("Loading", 36, 80, COLOR_BIZ_LABEL, WHITE);
         }
     }
     else
@@ -573,33 +569,20 @@ static void Draw_Biz(void)
     }
     Draw_LinkBar();
 
-    /* 图像接收中：进度条纯信息展示，节流刷新，不阻塞帧接收 */
+    /* 图像接收中：Loading旋转动画（轻量，不阻塞帧接收） */
     if (s_biz_type == ASK_TYPE_GRAPHIC && s_image_total_frames > 0 && !s_image_complete)
     {
-        /* 首次进入：清除内容区（含Waiting残留）+ 画 IMG 标签和进度条底框 */
+        /* 首次进入：清除内容区 + 画 IMG 标签和 Loading 文字 */
         if (!s_image_ui_init)
         {
             Lcd_fill(0, 48, 128, 112, WHITE);
             LCD_YIELD();
             ShowStr("IMG", 4, 48, COLOR_BIZ_VALUE, WHITE);
-            ShowNum(0, 36, 64, COLOR_OK, WHITE);
-            ShowChar('/', 52, 64, COLOR_BIZ_LABEL, WHITE);
-            ShowNum(s_image_total_frames, 60, 64, COLOR_BIZ_LABEL, WHITE);
-            /* 进度条底框（灰色细线表示满条位置） */
-            Lcd_fill(4, 88, 124, 89, GRAY1);
-            Lcd_fill(4, 95, 124, 96, GRAY1);
+            ShowStr("Loading", 36, 80, COLOR_BIZ_LABEL, WHITE);
             s_image_ui_init = 1;
-            s_image_last_bar_w = 0;
-            s_image_last_draw_tick = HAL_GetTick();
         }
-
-        /* 节流刷新进度条：刷新到的瞬间显示当前已收帧数 */
-        uint32_t now = HAL_GetTick();
-        if (now - s_image_last_draw_tick >= IMAGE_PROGRESS_INTERVAL_MS)
-        {
-            Draw_ImageProgress();
-            s_image_last_draw_tick = now;
-        }
+        /* 更新旋转动画字符（ShowChar自带白底清背景，无需额外Lcd_fill） */
+        ShowChar(s_anim_chars[s_anim_idx], 92, 80, COLOR_BIZ_VALUE, WHITE);
     }
     else if (s_biz_updated)
     {
@@ -1166,20 +1149,24 @@ void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len)
 
         if (s_image_complete)
         {
-            /* 图像接收完成：立即渲染，不需等进度条 */
+            /* 图像接收完成：立即渲染 */
             s_image_rendered = 0;
         }
         else if (s_image_total_frames > 0)
         {
-            /* 图像头帧到达：标记 UI 需要初始化 */
-            s_image_ui_init = 0;
-            s_image_last_bar_w = 0;
-            s_image_last_draw_tick = 0;
+            if (s_image_rx_count == 0)
+            {
+                /* 头帧刚到（rx_count被重置为0）：初始化UI */
+                s_image_ui_init = 0;
+                s_image_last_bar_w = 0;
+                s_image_last_draw_tick = 0;
+            }
+            /* 数据帧：不重置s_image_ui_init，保持Loading动画连续 */
             s_biz_updated = 1;
         }
         else
         {
-            /* 几何图样或头帧：触发内容刷新 */
+            /* 几何图样：触发内容刷新 */
             s_image_ui_init = 0;
             s_image_last_bar_w = 0;
             s_biz_updated = 1;

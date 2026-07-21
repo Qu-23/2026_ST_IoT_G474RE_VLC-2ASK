@@ -34,16 +34,24 @@ except ImportError:
 
 # 默认输出目录：兼容 PyInstaller 打包
 def _get_project_root():
+    """从 exe 或脚本位置向上遍历目录树，查找包含 Pic_dir_output 的工程根"""
     if getattr(sys, 'frozen', False):
-        exe_dir = os.path.dirname(sys.executable)
-        if os.path.basename(exe_dir).lower() == 'tools':
-            return os.path.dirname(exe_dir)
-        return exe_dir
+        start = os.path.dirname(sys.executable)
     else:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        if os.path.basename(script_dir) == "tools":
-            return os.path.dirname(script_dir)
-        return script_dir
+        start = os.path.dirname(os.path.abspath(__file__))
+
+    # 向上遍历最多10级目录，查找 Pic_dir_output
+    d = start
+    for _ in range(10):
+        if os.path.isdir(os.path.join(d, "Pic_dir_output")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:  # 已到根目录
+            break
+        d = parent
+
+    # 回退到起始目录
+    return start
 
 PROJECT_ROOT = _get_project_root()
 DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "Pic_dir_output")
@@ -134,15 +142,15 @@ def process_image(input_path, output_path, threshold=128, invert=False):
 
 
 def send_via_serial(bin_data, port, baudrate=921600):
-    """通过串口将 .bin 文件发送给 TX 端 I 命令
+    """通过串口将 .bin 文件原始字节发送给 TX 端
 
-    流程:
-      1. 打开串口，发送 "I\\n" 进入图像接收模式
-      2. 等待 TX 回复 "I:READY"
-      3. 发送4字节图像头
-      4. 等待 TX 回复 "I:HDR"
-      5. 逐帧发送65字节数据帧（1B seq + 64B data），每帧间隔100ms
-      6. 等待 TX 回复 "I:OK"
+    TX 端 I 命令架构：先全收再发
+      1. TX 收到 I 命令 → 进入 IS_RECV 模式
+      2. TX 持续收 UART 字节到 img_file_buf[]
+      3. 收完 2052B 后自动进入 IS_SEND 逐帧转发 2ASK
+      4. 也可直接发 .bin 文件（TX 自动检测 0xFE 头进入接收模式）
+
+    本函数直接发送 .bin 原始字节，分块传输避免溢出
     """
     try:
         import serial
@@ -152,71 +160,62 @@ def send_via_serial(bin_data, port, baudrate=921600):
 
     print(f'\n串口发送: {port} @ {baudrate}bps')
 
-    ser = serial.Serial(port, baudrate, timeout=2)
-    time.sleep(0.1)  # 等待串口稳定
+    # 尝试打开串口，PermissionError时自动重试
+    ser = None
+    for attempt in range(1, 4):
+        try:
+            ser = serial.Serial(port, baudrate, timeout=2)
+            break
+        except serial.SerialException as e:
+            if "PermissionError" in str(e) or "拒绝访问" in str(e) or "Permission" in str(e):
+                print(f'  [重试 {attempt}/3] 串口被占用，请关闭串口助手...')
+                if attempt < 3:
+                    time.sleep(2)
+                else:
+                    print('  错误: 串口仍被占用')
+                    return
+            else:
+                print(f'  错误: {e}')
+                return
 
-    # 清空接收缓冲
-    ser.reset_input_buffer()
+    try:
+        time.sleep(0.1)  # 等待串口稳定
+        ser.reset_input_buffer()
 
-    # 1. 发送 I 命令
-    print('  发送 I 命令...')
-    ser.write(b'I\n')
-    time.sleep(0.2)
+        # 发送空行清空 TX 命令缓冲
+        ser.write(b'\n')
+        time.sleep(0.05)
 
-    resp = ser.readline().decode('ascii', errors='replace').strip()
-    print(f'  TX: {resp}')
-    if 'READY' not in resp:
-        print(f'  错误: TX 未就绪，回复: {resp}')
-        ser.close()
-        return
+        # 直接发送 .bin 文件原始字节
+        # TX 端 IS_RECV 模式会全部缓存到 img_file_buf，收完后自动进入 IS_SEND
+        print(f'  发送 .bin 文件 ({len(bin_data)}B)...')
+        CHUNK = 256
+        total = len(bin_data)
+        for i in range(0, total, CHUNK):
+            end = min(i + CHUNK, total)
+            ser.write(bin_data[i:end])
+            # 短暂间隔让 TX 消费 UART 字节
+            time.sleep(0.01)
+            print(f'  进度: {end}/{total}B', end='\r')
 
-    # 2. 发送4字节图像头
-    header = bin_data[:4]
-    print(f'  发送图像头: {header.hex().upper()}')
-    ser.write(header)
+        print(f'\n  全部 {total} 字节已发送!')
 
-    # 等待 TX 处理头帧（含 2ASK 发送延迟 ~50ms）
-    time.sleep(0.1)
-    resp = ser.readline().decode('ascii', errors='replace').strip()
-    print(f'  TX: {resp}')
-
-    # 3. 逐帧发送数据
-    total_frames = header[1]
-    bitmap_data = bin_data[4:]
-
-    for seq in range(total_frames):
-        offset = seq * FRAME_DATA_LEN
-        chunk = bitmap_data[offset:offset + FRAME_DATA_LEN]
-
-        # 构造65字节数据帧: [seq] + [64B data]
-        frame = bytes([seq]) + chunk
-        if len(chunk) < FRAME_DATA_LEN:
-            frame = bytes([seq]) + chunk + b'\xFF' * (FRAME_DATA_LEN - len(chunk))
-
-        ser.write(frame)
-
-        # 等待 TX 处理帧（2ASK发送~30ms + idle~30ms）
-        time.sleep(0.1)
-
-        # 读取 TX 回复（非阻塞式）
+        # 等待 TX 处理完毕
+        time.sleep(1.0)
         while ser.in_waiting > 0:
             resp = ser.readline().decode('ascii', errors='replace').strip()
             if resp:
                 print(f'  TX: {resp}')
 
-        print(f'  帧 {seq+1}/{total_frames} 已发送', end='\r')
-
-    print(f'\n  全部 {total_frames} 帧已发送!')
-
-    # 等待最终回复
-    time.sleep(0.3)
-    while ser.in_waiting > 0:
-        resp = ser.readline().decode('ascii', errors='replace').strip()
-        if resp:
-            print(f'  TX: {resp}')
-
-    ser.close()
-    print('  串口已关闭')
+        ser.close()
+        print('  串口已关闭')
+    except Exception as e:
+        print(f'  错误: {e}')
+        if ser:
+            try:
+                ser.close()
+            except Exception:
+                pass
 
 
 def main():
