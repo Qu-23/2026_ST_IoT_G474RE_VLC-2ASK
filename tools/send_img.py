@@ -34,7 +34,9 @@ except ImportError:
 
 # 默认输出目录
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_OUTPUT_DIR = os.path.join(SCRIPT_DIR, "Pic_dir_output")
+# 脚本在 tools/ 子目录下，向上一级找工程根目录
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR) if os.path.basename(SCRIPT_DIR) == "tools" else SCRIPT_DIR
+DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "Pic_dir_output")
 
 IMG_WIDTH = 128
 IMG_HEIGHT = 128

@@ -1115,11 +1115,6 @@
               <FilePath>../Src/lcd_display.c</FilePath>
             </File>
             <File>
-              <FileName>ask_protocol.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../../ask_protocol.c</FilePath>
-            </File>
-            <File>
               <FileName>SPI_FLASH.c</FileName>
               <FileType>1</FileType>
               <FilePath>../HARDWARE/FLASH/SPI_FLASH.c</FilePath>

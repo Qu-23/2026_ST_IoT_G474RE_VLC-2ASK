@@ -4,6 +4,7 @@
 拖拽图片即可转换，一键串口发送到 TX 端
 
 打包命令:
+    cd tools
     pip install pyinstaller pillow pyserial
     pyinstaller --onefile --windowed --name=2ASK_ImgSender img_sender_gui.py
 """
@@ -31,25 +32,29 @@ BITMAP_SZ = IMG_W * IMG_H // 8
 FRAME_DATA = 64
 TOTAL_FRAMES = BITMAP_SZ // FRAME_DATA
 
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Pic_dir_output")
+# 输出目录：与工程根目录的 Pic_dir_output 对齐
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# 如果脚本在 tools/ 子目录下，向上一级找工程根
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR) if os.path.basename(SCRIPT_DIR) == "tools" else SCRIPT_DIR
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, "Pic_dir_output")
 
 # ─── 紫群青色主题 ───
 C = {
-    "bg":       "#1A1A2E",    # 深底
-    "card":     "#16213E",    # 卡片
-    "surface":  "#0F3460",    # 面板
-    "primary":  "#7B2FF7",    # 紫
-    "primary2": "#9D4EDD",    # 浅紫
-    "accent":   "#C77DFF",    # 亮紫
-    "cyan":     "#00D2FF",    # 群青
-    "cyan2":    "#0096C7",    # 深群青
-    "success":  "#06D6A0",    # 绿
-    "warn":     "#FFD166",    # 橙
-    "error":    "#EF476F",    # 红
-    "text":     "#EAEAEA",    # 白字
-    "text2":    "#8892B0",    # 灰字
-    "border":   "#233554",    # 边框
-    "canvas":   "#0D1B2A",    # 画布底
+    "bg":       "#1A1A2E",
+    "card":     "#16213E",
+    "surface":  "#0F3460",
+    "primary":  "#7B2FF7",
+    "primary2": "#9D4EDD",
+    "accent":   "#C77DFF",
+    "cyan":     "#00D2FF",
+    "cyan2":    "#0096C7",
+    "success":  "#06D6A0",
+    "warn":     "#FFD166",
+    "error":    "#EF476F",
+    "text":     "#EAEAEA",
+    "text2":    "#8892B0",
+    "border":   "#233554",
+    "canvas":   "#0D1B2A",
 }
 
 
@@ -112,7 +117,6 @@ def serial_send(bin_data, port, baud, log, prog):
         log(f"连接 {port} @ {baud}bps")
         s.write(b'I\n')
 
-        # 等 READY
         t0 = time.time()
         while time.time() - t0 < 3:
             if s.in_waiting:
@@ -125,7 +129,6 @@ def serial_send(bin_data, port, baud, log, prog):
             s.close()
             return False
 
-        # 发头
         hdr = bin_data[:4]
         log(f"发送头: FE {hdr[1]:02X} {hdr[2]:02X} {hdr[3]:02X}")
         s.write(hdr)
@@ -135,7 +138,6 @@ def serial_send(bin_data, port, baud, log, prog):
             if ln:
                 log(f"TX> {ln}")
 
-        # 逐帧
         n = hdr[1]
         data = bin_data[4:]
         for seq in range(n):
@@ -167,15 +169,13 @@ def serial_send(bin_data, port, baud, log, prog):
 
 
 # ═══════════════════════════════════════════
-#  流线型图标生成
+#  流线型图标
 # ═══════════════════════════════════════════
 
 def make_icon(size=64):
-    """生成紫+群青渐变圆形图标"""
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     margin = 4
-    # 渐变圆：从群青到紫
     for y in range(size):
         ratio = y / size
         r = int(0 + 123 * ratio)
@@ -186,7 +186,7 @@ def make_icon(size=64):
             radius = size / 2 - margin
             if (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2:
                 img.putpixel((x, y), (r, g, b, 255))
-    # 中间画信号波纹
+    # 信号波纹
     cx, cy = size // 2, size // 2
     for dy in range(-8, 9):
         for dx in range(-16, 17):
@@ -205,8 +205,8 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.title("2ASK Image Sender")
-        self.root.geometry("540x700")
-        self.root.resizable(False, False)
+        self.root.geometry("560x720")
+        self.root.minsize(480, 620)
         self.root.configure(bg=C["bg"])
 
         # 图标
@@ -221,133 +221,159 @@ class App:
         self.bindata = None
         self.curpath = None
 
-        # 拖拽 (可选)
+        # 拖拽支持 (tkinterdnd2 或 windnd)
+        self._dnd_ok = False
+        try:
+            from tkinterdnd2 import DND_FILES, TkinterDnD
+            # 需要替换 root，这里无法替换，跳过
+        except ImportError:
+            pass
         try:
             import windnd
-            windnd.hook_dropfiles(self.root, func=lambda f: self._load(f[0].decode('gbk')))
-        except Exception:
+            windnd.hook_dropfiles(self.root, func=self._on_drop)
+            self._dnd_ok = True
+        except ImportError:
             pass
 
         self._build()
         self._center()
 
+        # 绑定窗口大小变化
+        self.root.bind("<Configure>", self._on_resize)
+
     def _center(self):
         self.root.update_idletasks()
-        w, h = self.root.winfo_width(), self.root.winfo_height()
+        w = self.root.winfo_width()
+        h = self.root.winfo_height()
         self.root.geometry(f'+{(self.root.winfo_screenwidth()-w)//2}+{(self.root.winfo_screenheight()-h)//2}')
+
+    def _on_drop(self, files):
+        if files:
+            path = files[0].decode('gbk') if isinstance(files[0], bytes) else files[0]
+            self._load(path)
+
+    def _on_resize(self, event):
+        # 窗口可自由缩放（由 minsize 控制）
+        pass
 
     # ── 构建UI ──
     def _build(self):
-        # 标题栏
-        hdr = tk.Frame(self.root, bg=C["surface"], height=56)
+        # ── 标题栏 ──
+        hdr = tk.Frame(self.root, bg=C["surface"], height=54)
         hdr.pack(fill=tk.X)
         hdr.pack_propagate(False)
-        # 渐变效果用多层 frame 模拟
+        # 底部渐变条
         bar = tk.Frame(hdr, bg=C["primary"], height=3)
         bar.pack(fill=tk.X, side=tk.BOTTOM)
-        tk.Label(hdr, text="2ASK  Image Sender", font=("Segoe UI", 18, "bold"),
+        tk.Label(hdr, text="✦  2ASK  Image  Sender", font=("Segoe UI", 17, "bold"),
                  fg=C["cyan"], bg=C["surface"]).pack(expand=True)
 
-        # 拖拽区
-        df = tk.Frame(self.root, bg=C["card"], highlightbackground=C["border"],
-                       highlightthickness=1)
-        df.pack(fill=tk.X, padx=20, pady=(16, 8))
-        self.drop_lbl = tk.Label(df, text="⬇  拖拽图片到此处  ·  或点击选择",
+        # ── 拖拽区（带虚线圆角感）──
+        df = tk.Frame(self.root, bg=C["card"], highlightbackground=C["primary2"],
+                       highlightthickness=2)
+        df.pack(fill=tk.X, padx=20, pady=(14, 6))
+        dnd_hint = "⬇  拖拽图片到此处  ·  或点击选择" if not self._dnd_ok else "⬇  拖拽图片到此处  ·  或点击选择"
+        self.drop_lbl = tk.Label(df, text=dnd_hint,
                                   font=("Segoe UI", 12), fg=C["text2"],
                                   bg=C["card"], height=3, cursor="hand2")
-        self.drop_lbl.pack(fill=tk.BOTH, padx=16, pady=12)
+        self.drop_lbl.pack(fill=tk.BOTH, padx=20, pady=12)
         self.drop_lbl.bind("<Button-1>", lambda e: self._browse())
-        # hover 效果
-        self.drop_lbl.bind("<Enter>", lambda e: self.drop_lbl.configure(fg=C["accent"], bg=C["surface"]))
-        self.drop_lbl.bind("<Leave>", lambda e: self.drop_lbl.configure(fg=C["text2"], bg=C["card"]))
+        self.drop_lbl.bind("<Enter>", lambda e: (
+            self.drop_lbl.configure(fg=C["accent"], bg=C["surface"]),
+            self.drop_lbl.configure(text="⬇  释放鼠标即可加载图片  ·  或点击选择")))
+        self.drop_lbl.bind("<Leave>", lambda e: (
+            self.drop_lbl.configure(fg=C["text2"], bg=C["card"]),
+            self.drop_lbl.configure(text=dnd_hint)))
 
-        # 参数行
+        # ── 参数行 ──
         pf = tk.Frame(self.root, bg=C["bg"])
         pf.pack(fill=tk.X, padx=20, pady=4)
         tk.Label(pf, text="阈值", font=("Segoe UI", 10), fg=C["text2"], bg=C["bg"]).pack(side=tk.LEFT)
         self.thr_var = tk.IntVar(value=200)
         self.thr_scale = tk.Scale(pf, from_=50, to=255, orient=tk.HORIZONTAL,
-                                   variable=self.thr_var, length=180, bg=C["bg"],
+                                   variable=self.thr_var, length=200, bg=C["bg"],
                                    fg=C["text"], troughcolor=C["surface"],
                                    highlightthickness=0, sliderrelief=tk.FLAT,
                                    activebackground=C["primary"],
                                    command=lambda v: self._reencode())
         self.thr_scale.pack(side=tk.LEFT, padx=(4, 20))
         self.inv_var = tk.BooleanVar()
-        inv_cb = tk.Checkbutton(pf, text="反转", variable=self.inv_var,
-                                 font=("Segoe UI", 10), fg=C["text2"], bg=C["bg"],
-                                 selectcolor=C["surface"], activebackground=C["bg"],
-                                 activeforeground=C["accent"],
-                                 command=self._reencode)
-        inv_cb.pack(side=tk.LEFT)
+        tk.Checkbutton(pf, text="反转", variable=self.inv_var,
+                        font=("Segoe UI", 10), fg=C["text2"], bg=C["bg"],
+                        selectcolor=C["surface"], activebackground=C["bg"],
+                        activeforeground=C["accent"],
+                        command=self._reencode).pack(side=tk.LEFT)
 
-        # 预览区
+        # ── 预览区 ──
         pvf = tk.Frame(self.root, bg=C["card"], highlightbackground=C["border"],
                         highlightthickness=1)
-        pvf.pack(fill=tk.BOTH, padx=20, pady=8, expand=True)
+        pvf.pack(fill=tk.BOTH, padx=20, pady=6, expand=True)
 
         # 左原图
         lf = tk.Frame(pvf, bg=C["card"])
-        lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=12, pady=10)
-        tk.Label(lf, text="原 图", font=("Segoe UI", 9, "bold"),
+        lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        tk.Label(lf, text="◈ 原 图", font=("Segoe UI", 9, "bold"),
                  fg=C["cyan"], bg=C["card"]).pack()
         self.cv_orig = tk.Canvas(lf, width=180, height=180, bg=C["canvas"],
                                   highlightthickness=1, highlightbackground=C["border"])
-        self.cv_orig.pack(pady=6)
+        self.cv_orig.pack(pady=6, expand=True)
 
-        # 分隔线
-        tk.Frame(pvf, bg=C["border"], width=1).pack(side=tk.LEFT, fill=tk.Y, pady=10)
+        # 分隔
+        sep = tk.Frame(pvf, bg=C["border"], width=2)
+        sep.pack(side=tk.LEFT, fill=tk.Y, pady=12, padx=2)
 
         # 右编码
         rf = tk.Frame(pvf, bg=C["card"])
-        rf.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=12, pady=10)
-        tk.Label(rf, text="编 码", font=("Segoe UI", 9, "bold"),
+        rf.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        tk.Label(rf, text="◈ 编 码", font=("Segoe UI", 9, "bold"),
                  fg=C["primary2"], bg=C["card"]).pack()
         self.cv_enc = tk.Canvas(rf, width=180, height=180, bg=C["canvas"],
                                  highlightthickness=1, highlightbackground=C["border"])
-        self.cv_enc.pack(pady=6)
+        self.cv_enc.pack(pady=6, expand=True)
 
-        # 状态
+        # ── 状态 ──
         self.st_var = tk.StringVar(value="等待选择图片")
         tk.Label(self.root, textvariable=self.st_var, font=("Consolas", 9),
-                 fg=C["text2"], bg=C["bg"], anchor=tk.W).pack(fill=tk.X, padx=20, pady=(4, 0))
+                 fg=C["text2"], bg=C["bg"], anchor=tk.W).pack(fill=tk.X, padx=20, pady=(2, 0))
 
-        # 进度
+        # ── 进度 ──
         style = ttk.Style()
         style.theme_use('default')
-        style.configure("blue.Horizontal.TProgressbar",
+        style.configure("Purple.Horizontal.TProgressbar",
                          troughcolor=C["surface"], background=C["primary"],
                          darkcolor=C["primary"], lightcolor=C["primary2"],
                          bordercolor=C["bg"])
-        self.prog = ttk.Progressbar(self.root, style="blue.Horizontal.TProgressbar",
+        self.prog = ttk.Progressbar(self.root, style="Purple.Horizontal.TProgressbar",
                                      mode='determinate')
-        self.prog.pack(fill=tk.X, padx=20, pady=6)
+        self.prog.pack(fill=tk.X, padx=20, pady=4)
 
-        # 按钮行
+        # ── 按钮行 ──
         bf = tk.Frame(self.root, bg=C["bg"])
-        bf.pack(fill=tk.X, padx=20, pady=(2, 8))
+        bf.pack(fill=tk.X, padx=20, pady=(2, 6))
 
-        self.btn_save = tk.Button(bf, text="💾 保存 .bin", font=("Segoe UI", 11, "bold"),
+        self.btn_save = tk.Button(bf, text="✦ 保存 .bin", font=("Segoe UI", 12, "bold"),
                                    bg=C["primary"], fg="white", relief=tk.FLAT,
                                    activebackground=C["primary2"], activeforeground="white",
-                                   cursor="hand2", state=tk.DISABLED, command=self._save)
-        self.btn_save.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6), ipady=5)
+                                   cursor="hand2", state=tk.DISABLED, command=self._save,
+                                   bd=0, padx=10, pady=6)
+        self.btn_save.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6))
 
-        self.btn_send = tk.Button(bf, text="📡 串口发送", font=("Segoe UI", 11, "bold"),
+        self.btn_send = tk.Button(bf, text="◈ 串口发送", font=("Segoe UI", 12, "bold"),
                                    bg=C["cyan2"], fg="white", relief=tk.FLAT,
                                    activebackground=C["cyan"], activeforeground=C["bg"],
-                                   cursor="hand2", state=tk.DISABLED, command=self._send)
-        self.btn_send.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(6, 0), ipady=5)
+                                   cursor="hand2", state=tk.DISABLED, command=self._send,
+                                   bd=0, padx=10, pady=6)
+        self.btn_send.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(6, 0))
 
-        # 日志
+        # ── 日志 ──
         logf = tk.Frame(self.root, bg=C["canvas"], highlightbackground=C["border"],
                          highlightthickness=1)
-        logf.pack(fill=tk.X, padx=20, pady=(0, 14))
+        logf.pack(fill=tk.BOTH, padx=20, pady=(0, 12), expand=False)
         self.logw = tk.Text(logf, height=4, font=("Consolas", 9),
                              bg=C["canvas"], fg=C["text2"], insertbackground=C["text2"],
                              relief=tk.FLAT, state=tk.DISABLED, wrap=tk.WORD,
                              selectbackground=C["primary"])
-        self.logw.pack(fill=tk.X, padx=4, pady=4)
+        self.logw.pack(fill=tk.BOTH, padx=4, pady=4)
 
     # ── 日志 ──
     def log(self, m):
@@ -435,28 +461,38 @@ class App:
             return
 
         dlg = tk.Toplevel(self.root)
-        dlg.title("选择串口")
-        dlg.geometry("320x200")
+        dlg.title("串口发送")
+        dlg.geometry("340x240")
         dlg.configure(bg=C["bg"])
         dlg.transient(self.root)
         dlg.grab_set()
+        dlg.resizable(False, False)
 
-        tk.Label(dlg, text="串口", font=("Segoe UI", 11), fg=C["text"], bg=C["bg"]).pack(pady=(18, 4))
+        tk.Label(dlg, text="◈ 串口配置", font=("Segoe UI", 13, "bold"),
+                 fg=C["cyan"], bg=C["bg"]).pack(pady=(16, 8))
+
+        row1 = tk.Frame(dlg, bg=C["bg"])
+        row1.pack(fill=tk.X, padx=24)
+        tk.Label(row1, text="端口", font=("Segoe UI", 10), fg=C["text2"], bg=C["bg"]).pack(side=tk.LEFT)
         pv = tk.StringVar(value=ports[0])
-        ttk.Combobox(dlg, textvariable=pv, values=ports, state='readonly', width=22).pack()
+        ttk.Combobox(row1, textvariable=pv, values=ports, state='readonly', width=18).pack(side=tk.RIGHT)
 
-        tk.Label(dlg, text="波特率", font=("Segoe UI", 11), fg=C["text"], bg=C["bg"]).pack(pady=(12, 4))
+        row2 = tk.Frame(dlg, bg=C["bg"])
+        row2.pack(fill=tk.X, padx=24, pady=(8, 0))
+        tk.Label(row2, text="波特率", font=("Segoe UI", 10), fg=C["text2"], bg=C["bg"]).pack(side=tk.LEFT)
         bv = tk.StringVar(value="921600")
-        ttk.Combobox(dlg, textvariable=bv, values=["921600", "460800", "115200"],
-                      state='readonly', width=22).pack()
+        ttk.Combobox(row2, textvariable=bv, values=["921600", "460800", "115200"],
+                      state='readonly', width=18).pack(side=tk.RIGHT)
 
         def go():
             dlg.destroy()
             self._start_tx(pv.get(), int(bv.get()))
 
-        tk.Button(dlg, text="发  送", font=("Segoe UI", 12, "bold"),
+        # 发送按钮：足够大，不被遮挡
+        btn = tk.Button(dlg, text="◈  开始发送", font=("Segoe UI", 13, "bold"),
                   bg=C["cyan2"], fg="white", relief=tk.FLAT, cursor="hand2",
-                  activebackground=C["cyan"], command=go).pack(pady=16, ipadx=28, ipady=3)
+                  activebackground=C["cyan"], command=go, bd=0)
+        btn.pack(pady=20, ipadx=32, ipady=6)
 
     def _start_tx(self, port, baud):
         self.btn_send.configure(state=tk.DISABLED)
