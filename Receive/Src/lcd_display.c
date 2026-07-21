@@ -56,7 +56,7 @@ static uint8_t  s_hz_page = 0;            /* HZ页码: 0=ONCHIP, 1+=FLASH分页 
 static uint8_t  s_force_redraw = 1;
 
 /* 业务模式数据 */
-#define BIZ_PAYLOAD_MAX  64
+#define BIZ_PAYLOAD_MAX  128
 static uint8_t  s_biz_type = 0;
 static uint8_t  s_biz_len = 0;
 static uint8_t  s_biz_payload[BIZ_PAYLOAD_MAX];
@@ -72,6 +72,7 @@ static uint8_t  s_biz_info_rows = 1;  /* 1=Type+Len same row, 2=Len wrapped to n
 static uint8_t s_image_buf[IMAGE_SIZE];
 static uint8_t s_image_rx_mask[33];  /* 每帧是否已接收 */
 static uint8_t s_image_complete = 0;
+static uint8_t s_image_rx_count = 0; /* 已接收帧数 */
 
 /* 待机动画 */
 static uint8_t  s_anim_idx = 0;
@@ -338,6 +339,7 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
     {
         /* 几何图样：payload = [shape, param] */
         uint8_t shape = payload[0];
+        s_image_complete = 0;  /* 清除图像模式 */
 
         Lcd_fill(0, 32, 128, 112, WHITE);  /* 清除内容区 */
 
@@ -364,23 +366,31 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
         uint16_t offset = (uint16_t)(seq * 64);
 
         memcpy(&s_image_buf[offset], &payload[1], 64);
-        s_image_rx_mask[seq] = 1;
-
-        /* 检查是否所有帧都已接收 */
-        uint8_t all_rx = 1;
-        for (int i = 0; i < 33; i++)
+        if (s_image_rx_mask[seq] == 0)
         {
-            if (s_image_rx_mask[i] == 0)
-            {
-                all_rx = 0;
-                break;
-            }
+            s_image_rx_mask[seq] = 1;
+            s_image_rx_count++;
         }
 
-        if (all_rx)
+        /* 检查是否所有帧都已接收 */
+        if (s_image_rx_count >= 33)
         {
             s_image_complete = 1;
             Draw_ImageBuffer();
+        }
+        else
+        {
+            /* 接收中：在内容区显示进度 */
+            Lcd_fill(0, 32, 128, 112, WHITE);
+            ShowStr("IMG", 4, 48, COLOR_BIZ_VALUE, WHITE);
+            ShowNum(s_image_rx_count, 36, 64, COLOR_OK, WHITE);
+            ShowChar('/', 52, 64, COLOR_BIZ_LABEL, WHITE);
+            ShowNum(33, 60, 64, COLOR_BIZ_LABEL, WHITE);
+            /* 简易进度条 y=88 */
+            {
+                uint16_t bar_w = (uint16_t)(s_image_rx_count * 120 / 33);
+                Lcd_fill(4, 88, 4 + bar_w, 96, COLOR_OK);
+            }
         }
     }
 }
@@ -472,6 +482,17 @@ static void Draw_BizFooter(void)
 
 static void Draw_Biz(void)
 {
+    /* 图像完成时全屏显示，跳过标题/状态/底部栏 */
+    if (s_image_complete)
+    {
+        if (s_force_redraw)
+        {
+            Draw_ImageBuffer();
+            s_force_redraw = 0;
+        }
+        return;
+    }
+
     if (s_force_redraw)
     {
         Draw_BizTitle();
@@ -1022,6 +1043,14 @@ void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len)
     s_biz_has_data = 1;
     s_biz_updated = 1;
 
+    /* 非图像帧或几何图样帧清除图像全屏状态 */
+    if (type != ASK_TYPE_GRAPHIC || len == 2)
+    {
+        s_image_complete = 0;
+        memset(s_image_rx_mask, 0, sizeof(s_image_rx_mask));
+        s_image_rx_count = 0;
+    }
+
     /* 收到帧说明链路正常 */
     if (!s_link_ok)
     {
@@ -1056,6 +1085,7 @@ void LCDDisplay_Process(void)
         else
         {
             s_mode = (s_mode == MODE_BIZ) ? MODE_DBG : MODE_BIZ;
+            s_image_complete = 0;  /* 切换模式时清除图像全屏 */
             s_force_redraw = 1;
         }
     }
