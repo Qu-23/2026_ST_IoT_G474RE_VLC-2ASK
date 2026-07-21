@@ -34,6 +34,7 @@
 #include "ask_tx.h"
 #include "logo.h"
 #include "mickey.h"
+#include "nuannuan.h"
 
 /* USER CODE END Includes */
 
@@ -79,6 +80,14 @@ extern DMA_HandleTypeDef hdma_dac2_ch1;  // actual DMA handle for DAC2, defined 
 static char     cmd_line[64];
 static uint8_t  cmd_len = 0;
 
+/*--- Image stream receive (I command) state --------------------------------*/
+static uint8_t  img_stream_active = 0;    /* 1 = 正在从串口接收图像数据     */
+static uint8_t  img_stream_phase = 0;     /* 0=等头, 1=等数据帧             */
+static uint8_t  img_stream_buf[65];       /* 当前帧接收缓冲                 */
+static uint8_t  img_stream_pos = 0;       /* 当前帧已接收字节数             */
+static uint8_t  img_stream_total = 0;     /* 数据帧总数（来自头帧）         */
+static uint8_t  img_stream_count = 0;     /* 已发送数据帧计数               */
+
 /*--- Audio DEMO state ------------------------------------------------------*/
 static uint8_t  audio_demo_active = 0;    /* 1 = stream AUDIO frames       */
 static uint32_t audio_last_send_tick = 0;
@@ -114,8 +123,9 @@ static void PrintCommandList(void)
     printf("V         Scope test frame (payload=0x55)\r\n");
     printf("M<文本>   汉字文本帧发送 (same as T, specialized for Chinese input)\r\n");
     printf("G[0-2]    Send geometric shape (0=circle, 1=square, 2=triangle)\r\n");
-    printf("P[0-1]    Send picture (0=LOGO, 1=Mickey)\r\n");
+    printf("P[0-2]    Send picture (0=LOGO, 1=Mickey, 2=Nuannuan)\r\n");
     printf("S         Send logo image (legacy, same as P0)\r\n");
+    printf("I         Image stream mode (receive .bin from UART, forward to 2ASK)\r\n");
     printf("C         Show this command list\r\n");
     printf("========================\r\n");
 }
@@ -584,7 +594,95 @@ int main(void)
 		// --- 1. 读取上位机串口命令 (line-based, '\n' terminated) ---
 		while (UART_RxAvailable() > 0)
 		{
-			char c = (char)UART_GetRxByte();
+			uint8_t rx_byte = UART_GetRxByte();
+
+			/* --- Image stream mode: 逐帧接收并转发 --- */
+			if (img_stream_active)
+			{
+				img_stream_buf[img_stream_pos++] = rx_byte;
+
+				if (img_stream_phase == 0)
+				{
+					/* Phase 0: 等待4字节图像头 */
+					if (img_stream_pos >= 4)
+					{
+						img_stream_total = img_stream_buf[1];  /* total_frames */
+						/* 封装头帧发送 */
+						uint8_t hdr[65];
+						memset(hdr, 0xFF, 65);
+						hdr[0] = 0xFE;
+						hdr[1] = img_stream_buf[1];
+						hdr[2] = img_stream_buf[2];
+						hdr[3] = img_stream_buf[3];
+
+						ASK_TX_FIFO_Clear();
+						if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, hdr, 65) == 0)
+						{
+							tx_frame_pending = 1;
+							printf("I:HDR frames=%u\r\n", img_stream_total);
+						}
+						else
+						{
+							printf("I:HDR FULL\r\n");
+							img_stream_active = 0;
+							continue;
+						}
+						/* 等待头帧发完 */
+						while (tx_frame_pending)
+						{
+							if (ASK_TX_FIFO_Count() < 100)
+								tx_frame_pending = 0;
+						}
+						for (int i = 0; i < 30; i++)
+							ASK_TX_PushByte(0x55);
+						HAL_Delay(30);
+
+						img_stream_phase = 1;
+						img_stream_pos = 0;
+						img_stream_count = 0;
+					}
+				}
+				else /* phase == 1 */
+				{
+					/* Phase 1: 等待65字节数据帧 */
+					if (img_stream_pos >= 65)
+					{
+						if (ASK_TX_SendFrame(ASK_TYPE_GRAPHIC, img_stream_buf, 65) == 0)
+						{
+							tx_frame_pending = 1;
+							img_stream_count++;
+						}
+						else
+						{
+							printf("I:FULL at %u\r\n", img_stream_count);
+							img_stream_active = 0;
+							continue;
+						}
+
+						/* 等待帧发完 */
+						while (tx_frame_pending)
+						{
+							if (ASK_TX_FIFO_Count() < 100)
+								tx_frame_pending = 0;
+						}
+						for (int i = 0; i < 30; i++)
+							ASK_TX_PushByte(0x55);
+						HAL_Delay(30);
+
+						img_stream_pos = 0;
+
+						if (img_stream_count >= img_stream_total)
+						{
+							printf("I:OK frames=%u\r\n", img_stream_count);
+							img_stream_active = 0;
+						}
+					}
+				}
+				continue;  /* I 模式下字节不进入命令行 */
+			}
+
+			/* --- 正常命令行模式 --- */
+			char c = (char)rx_byte;
 			if (c == '\r') continue;            /* ignore CR */
 			if (c == '\n')
 			{
@@ -917,8 +1015,15 @@ static void ProcessCommand(char *line)
                 img_h = (uint8_t)MICKEY_BITMAP_HEIGHT;
                 pic_name = "Mickey";
                 break;
+            case 2:
+                bitmap = nuannuan_bitmap;
+                img_size = NUANNUAN_BITMAP_SIZE;
+                img_w_div8 = NUANNUAN_BITMAP_WIDTH / 8;
+                img_h = (uint8_t)NUANNUAN_BITMAP_HEIGHT;
+                pic_name = "Nuannuan";
+                break;
             default:
-                printf("P: unknown pic_id=%u (0=LOGO, 1=Mickey)\r\n", pic_id);
+                printf("P: unknown pic_id=%u (0=LOGO, 1=Mickey, 2=Nuannuan)\r\n", pic_id);
                 break;
             }
 
@@ -1071,6 +1176,22 @@ static void ProcessCommand(char *line)
             }
 
             printf("S OK frames=%u\r\n", frame_count);
+        }
+        break;
+
+    case 'I':
+    case 'i':
+        /* Image stream: 进入串口图像接收模式
+         * 上位机通过串口发送 .bin 文件（4B头 + 2048B数据）
+         * TX 逐帧读取并转发到 2ASK 通道：
+         *   Phase 0: 收4字节头 → 封装头帧(seq=0xFE)发送
+         *   Phase 1: 循环收65字节数据帧 → 转发到 2ASK */
+        {
+            img_stream_active = 1;
+            img_stream_phase = 0;
+            img_stream_pos = 0;
+            img_stream_count = 0;
+            printf("I:READY send .bin file now\r\n");
         }
         break;
 

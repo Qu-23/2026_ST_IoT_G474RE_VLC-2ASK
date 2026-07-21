@@ -410,6 +410,11 @@
               <FilePath>../Core/Src/mickey.c</FilePath>
             </File>
             <File>
+              <FileName>nuannuan.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/nuannuan.c</FilePath>
+            </File>
+            <File>
               <FileName>gpio.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/gpio.c</FilePath>
