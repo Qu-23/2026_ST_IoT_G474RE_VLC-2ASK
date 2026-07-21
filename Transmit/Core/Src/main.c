@@ -884,12 +884,14 @@ static void ProcessCommand(char *line)
 
     case 'S':
     case 's':
-        /* Send logo image, split into 33 frames (64 bytes each + seq number).
-         * Wait for each frame to complete before sending the next.
-         * IMPORTANT: must keep main-loop tasks running during wait
-         * (idle 0x55 fill, tx_frame_pending clear) to avoid RX heartbeat timeout. */
+        /* Send logo image, split into frames (64 bytes each + 1 seq byte).
+         * 2048 bytes / 64 per frame = 32 frames (seq 0..31).
+         * Wait for each frame's FIFO to drain before sending next.
+         * NOTE: do NOT push idle 0x55 while tx_frame_pending==1,
+         * it corrupts the frame data in FIFO and causes CRC failure on RX. */
         {
-            printf("S: sending logo (%u bytes, 33 frames)...\r\n", LOGO_SIZE);
+            uint8_t total_frames = (uint8_t)((LOGO_SIZE + 63) / 64);
+            printf("S: sending logo (%u bytes, %u frames)...\r\n", LOGO_SIZE, total_frames);
 
             ASK_TX_FIFO_Clear();
             uint16_t offset = 0;
@@ -917,16 +919,15 @@ static void ProcessCommand(char *line)
                 offset += chunk;
                 frame_count++;
 
-                /* Wait for frame to complete while keeping TX alive */
+                /* Wait for this frame's FIFO data to drain (frame fully sent) */
                 while (tx_frame_pending)
                 {
-                    /* Replicate main-loop idle fill and pending clear */
                     if (ASK_TX_FIFO_Count() < 100)
                         tx_frame_pending = 0;
-                    else if (ASK_TX_FIFO_Count() < 400)
-                        ASK_TX_PushByte(0x55);
                     HAL_Delay(5);
                 }
+                /* Brief gap between frames for RX processing */
+                HAL_Delay(20);
             }
 
             printf("S OK frames=%u\r\n", frame_count);

@@ -69,8 +69,9 @@ static uint8_t  s_biz_info_rows = 1;  /* 1=Type+Len same row, 2=Len wrapped to n
 #define IMAGE_WIDTH  128
 #define IMAGE_HEIGHT 128
 #define IMAGE_SIZE   2048
+#define IMAGE_FRAMES 32  /* 2048 / 64 = 32 帧 (seq 0..31) */
 static uint8_t s_image_buf[IMAGE_SIZE];
-static uint8_t s_image_rx_mask[33];  /* 每帧是否已接收 */
+static uint8_t s_image_rx_mask[IMAGE_FRAMES];  /* 每帧是否已接收 */
 static uint8_t s_image_complete = 0;
 static uint8_t s_image_rx_count = 0; /* 已接收帧数 */
 
@@ -359,7 +360,7 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
             DrawTriangle(64, 40, 32, 104, 96, 104, BLACK);
         }
     }
-    else if (len == 65 && payload[0] < 33)
+    else if (len == 65 && payload[0] < IMAGE_FRAMES)
     {
         /* Logo 图像帧：payload = [seq, data0..data63] */
         uint8_t seq = payload[0];
@@ -373,7 +374,7 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
         }
 
         /* 检查是否所有帧都已接收 */
-        if (s_image_rx_count >= 33)
+        if (s_image_rx_count >= IMAGE_FRAMES)
         {
             s_image_complete = 1;
             Draw_ImageBuffer();
@@ -385,10 +386,10 @@ static void ProcessGraphicFrame(const uint8_t *payload, uint8_t len)
             ShowStr("IMG", 4, 48, COLOR_BIZ_VALUE, WHITE);
             ShowNum(s_image_rx_count, 36, 64, COLOR_OK, WHITE);
             ShowChar('/', 52, 64, COLOR_BIZ_LABEL, WHITE);
-            ShowNum(33, 60, 64, COLOR_BIZ_LABEL, WHITE);
+            ShowNum(IMAGE_FRAMES, 60, 64, COLOR_BIZ_LABEL, WHITE);
             /* 简易进度条 y=88 */
             {
-                uint16_t bar_w = (uint16_t)(s_image_rx_count * 120 / 33);
+                uint16_t bar_w = (uint16_t)(s_image_rx_count * 120 / IMAGE_FRAMES);
                 Lcd_fill(4, 88, 4 + bar_w, 96, COLOR_OK);
             }
         }
