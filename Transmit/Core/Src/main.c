@@ -885,7 +885,9 @@ static void ProcessCommand(char *line)
     case 'S':
     case 's':
         /* Send logo image, split into 33 frames (64 bytes each + seq number).
-         * Wait for each frame to complete before sending the next. */
+         * Wait for each frame to complete before sending the next.
+         * IMPORTANT: must keep main-loop tasks running during wait
+         * (idle 0x55 fill, tx_frame_pending clear) to avoid RX heartbeat timeout. */
         {
             printf("S: sending logo (%u bytes, 33 frames)...\r\n", LOGO_SIZE);
 
@@ -915,9 +917,16 @@ static void ProcessCommand(char *line)
                 offset += chunk;
                 frame_count++;
 
-                /* Wait for frame to complete (poll tx_frame_pending) */
+                /* Wait for frame to complete while keeping TX alive */
                 while (tx_frame_pending)
-                    HAL_Delay(10);
+                {
+                    /* Replicate main-loop idle fill and pending clear */
+                    if (ASK_TX_FIFO_Count() < 100)
+                        tx_frame_pending = 0;
+                    else if (ASK_TX_FIFO_Count() < 400)
+                        ASK_TX_PushByte(0x55);
+                    HAL_Delay(5);
+                }
             }
 
             printf("S OK frames=%u\r\n", frame_count);
