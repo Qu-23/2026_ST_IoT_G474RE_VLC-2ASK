@@ -30,6 +30,10 @@ void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len);
 /* 按键扫描 + 模式切换 (PA0下降沿切换) */
 void LCDDisplay_Process(void);
 
+/* 设置让步回调：LCD渲染期间调用此函数处理挂起帧，防止阻塞接收 */
+typedef void (*LcdYieldFn)(void);
+void LCDDisplay_SetYieldFn(LcdYieldFn fn);
+
 #ifdef __cplusplus
 }
 #endif

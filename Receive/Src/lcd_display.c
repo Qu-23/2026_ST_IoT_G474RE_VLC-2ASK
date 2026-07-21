@@ -77,21 +77,15 @@ static uint8_t s_image_rx_count = 0;     /* 已接收帧数 */
 static uint8_t s_image_total_frames = 0; /* 由头帧动态设定 */
 static uint8_t s_image_shape = 0xFF;     /* 几何图样形状 (0/1/2)，0xFF=无 */
 
-/* 图像进度条节流刷新（避免全内容区清除阻塞帧接收） */
-static uint8_t  s_image_progress_dirty = 0;  /* 图像数据帧进度需要更新 */
+/* 图像进度条：纯信息展示，不阻塞帧接收 */
 static uint32_t s_image_last_draw_tick = 0;  /* 上次进度绘制时间 */
 static uint16_t s_image_last_bar_w = 0;      /* 上次绘制的进度条宽度（只扩展不重绘） */
-#define IMAGE_PROGRESS_INTERVAL_MS  200
+static uint8_t  s_image_rendered = 0;        /* 图像完成是否已渲染 */
+#define IMAGE_PROGRESS_INTERVAL_MS  150
 
-/* 图像UI分步初始化状态机（每步<3ms，避免单次Draw_Biz阻塞过久丢帧）
- * NONE → STEP1(清y48-64+IMG标签) → STEP2(清y64-88+进度数字)
- * → STEP3(清y88-96+进度条) → READY(正常节流刷新) */
-#define IMG_UI_NONE   0
-#define IMG_UI_STEP1  1
-#define IMG_UI_STEP2  2
-#define IMG_UI_STEP3  3
-#define IMG_UI_READY  4
-static uint8_t  s_image_ui_step = IMG_UI_NONE;
+/* Yield 回调：LCD 渲染期间调用，让信号处理器处理挂起帧 */
+static LcdYieldFn s_yield_fn = NULL;
+#define LCD_YIELD() do { if (s_yield_fn) s_yield_fn(); } while(0)
 
 /* 待机动画 */
 static uint8_t  s_anim_idx = 0;
@@ -216,7 +210,9 @@ static const char *TypeStr(uint8_t type)
     {
         case ASK_TYPE_RAW:     return "RAW";
         case ASK_TYPE_TEXT:    return "TEXT";
-        case ASK_TYPE_GRAPHIC: return "IMG";
+        case ASK_TYPE_GRAPHIC:
+            /* 图像帧(有total_frames)显示LOGO，几何图样显示GEO */
+            return (s_image_total_frames > 0) ? "LOGO" : "GEO";
         case ASK_TYPE_AUDIO:   return "AUDIO";
         default:               return "UNK";
     }
@@ -325,29 +321,34 @@ static void DrawTriangle(int x0, int y0, int x1, int y1, int x2, int y2, uint16_
     DrawLine(x2, y2, x0, y0, color);
 }
 
-/* 图像进度条局部刷新（约3-5ms，vs Draw_BizContent全区域清除~20ms）
- * 只清除和重绘进度数字区域 + 扩展进度条，不清除整个内容区 */
+/* 图像进度条局部刷新：纯信息展示，基于当前快照显示
+ * 进度条不阻塞帧接收，刷新到哪一帧就显示到哪一帧 */
 static void Draw_ImageProgress(void)
 {
     /* 进度数字区域 (y=64, x=36~100, 约64×16px) */
     Lcd_fill(36, 64, 100, 80, WHITE);
+    LCD_YIELD();
     ShowNum(s_image_rx_count, 36, 64, COLOR_OK, WHITE);
     ShowChar('/', 52, 64, COLOR_BIZ_LABEL, WHITE);
     ShowNum(s_image_total_frames, 60, 64, COLOR_BIZ_LABEL, WHITE);
 
-    /* 进度条：只扩展，不清除重绘（节省约2ms） */
-    uint16_t bar_w = (uint16_t)(s_image_rx_count * 120 / s_image_total_frames);
-    if (bar_w > s_image_last_bar_w)
+    /* 进度条：只扩展，不清除重绘 */
+    if (s_image_total_frames > 0)
     {
-        Lcd_fill(4 + s_image_last_bar_w, 88, 4 + bar_w, 96, COLOR_OK);
-        s_image_last_bar_w = bar_w;
+        uint16_t bar_w = (uint16_t)(s_image_rx_count * 120 / s_image_total_frames);
+        if (bar_w > s_image_last_bar_w)
+        {
+            Lcd_fill(4 + s_image_last_bar_w, 88, 4 + bar_w, 96, COLOR_OK);
+            s_image_last_bar_w = bar_w;
+        }
     }
 }
 
-/* 渲染缓存中的图像 */
+/* 渲染缓存中的图像（逐行 yield，不阻塞帧接收） */
 static void Draw_ImageBuffer(void)
 {
     Lcd_fill(0, 0, 128, 128, WHITE);  /* 清屏 */
+    LCD_YIELD();
 
     for (int row = 0; row < 128; row++)
     {
@@ -359,11 +360,13 @@ static void Draw_ImageBuffer(void)
                 uint8_t pixel = (byte >> (7 - bit)) & 1;  /* MSB first */
                 uint16_t x = (uint16_t)(col_byte * 8 + bit);
                 uint16_t y = (uint16_t)row;
-                /* 0=黑点，1=白点（不画） */
                 if (pixel == 0)
                     Gui_DrawPoint(x, y, BLACK);
             }
         }
+        /* 每8行 yield 一次，让信号处理器处理挂起帧 */
+        if ((row & 7) == 7)
+            LCD_YIELD();
     }
 }
 
@@ -530,9 +533,17 @@ static void Draw_BizFooter(void)
 
 static void Draw_Biz(void)
 {
-    /* 图像完成时全屏显示，跳过标题/状态/底部栏 */
+    /* 图像接收完成 → 立即全屏渲染，不管进度条走到哪 */
+    if (s_image_complete && !s_image_rendered)
+    {
+        Draw_ImageBuffer();
+        s_image_rendered = 1;
+        s_force_redraw = 0;
+        return;
+    }
     if (s_image_complete)
     {
+        /* 已渲染完成，跳过所有BIZ UI */
         if (s_force_redraw)
         {
             Draw_ImageBuffer();
@@ -544,13 +555,14 @@ static void Draw_Biz(void)
     if (s_force_redraw)
     {
         Draw_BizTitle();
+        LCD_YIELD();
         Draw_BizInfo();
+        LCD_YIELD();
         Draw_BizContent();
+        LCD_YIELD();
         Draw_BizFooter();
         s_force_redraw = 0;
         s_biz_updated = 0;
-        s_image_progress_dirty = 0;
-        s_image_ui_step = IMG_UI_READY;
         s_image_last_bar_w = (s_image_total_frames > 0) ?
             (uint16_t)(s_image_rx_count * 120 / s_image_total_frames) : 0;
         s_image_last_draw_tick = HAL_GetTick();
@@ -559,57 +571,21 @@ static void Draw_Biz(void)
     }
     Draw_LinkBar();
 
-    /* 图像接收中：分步初始化+节流局部刷新，避免阻塞帧接收 */
+    /* 图像接收中：进度条纯信息展示，节流刷新，不阻塞帧接收 */
     if (s_biz_type == ASK_TYPE_GRAPHIC && s_image_total_frames > 0 && !s_image_complete)
     {
-        if (s_biz_updated || s_image_progress_dirty || s_image_ui_step > IMG_UI_NONE)
+        /* 节流刷新进度条：刷新到的瞬间显示当前已收帧数 */
+        uint32_t now = HAL_GetTick();
+        if (now - s_image_last_draw_tick >= IMAGE_PROGRESS_INTERVAL_MS)
         {
-            switch (s_image_ui_step)
-            {
-            case IMG_UI_NONE:
-                /* 步骤1：清y=48-64 + IMG标签 (~2ms) */
-                Lcd_fill(0, 48, 128, 64, WHITE);
-                ShowStr("IMG", 4, 48, COLOR_BIZ_VALUE, WHITE);
-                s_image_ui_step = IMG_UI_STEP1;
-                s_image_last_bar_w = 0;
-                break;
-            case IMG_UI_STEP1:
-                /* 步骤2：清y=64-88（进度数字区+Waiting残余）(~3ms) */
-                Lcd_fill(0, 64, 128, 88, WHITE);
-                s_image_ui_step = IMG_UI_STEP2;
-                break;
-            case IMG_UI_STEP2:
-                /* 步骤3：清y=88-96 + 画初始进度 (~3ms) */
-                Lcd_fill(0, 88, 128, 96, WHITE);
-                Draw_ImageProgress();
-                s_image_ui_step = IMG_UI_READY;
-                s_image_last_draw_tick = HAL_GetTick();
-                break;
-            case IMG_UI_STEP3:
-                /* 不会到达，保留防错 */
-                s_image_ui_step = IMG_UI_READY;
-                break;
-            default: /* IMG_UI_READY */
-                /* 正常节流刷新进度（~2-3ms） */
-                {
-                    uint32_t now = HAL_GetTick();
-                    if (now - s_image_last_draw_tick >= IMAGE_PROGRESS_INTERVAL_MS)
-                    {
-                        Draw_ImageProgress();
-                        s_image_last_draw_tick = now;
-                    }
-                }
-                break;
-            }
-            s_biz_updated = 0;
-            s_image_progress_dirty = 0;
+            Draw_ImageProgress();
+            s_image_last_draw_tick = now;
         }
     }
     else if (s_biz_updated)
     {
         Draw_BizInfo();
         Draw_BizContent();
-        /* Footer is static now (FRM hidden), only drawn on force_redraw */
         s_biz_updated = 0;
     }
     else if (!s_biz_has_data)
@@ -1110,11 +1086,18 @@ void LCDDisplay_Init(void)
 
 void LCDDisplay_Update(const SignalStats_t *stats)
 {
-    /* 节流：图像UI初始化期间50ms（3步≈150ms完成），其余200ms */
+    /* 图像接收完成时立即渲染，不限流 */
+    if (s_mode == MODE_BIZ && s_image_complete && !s_image_rendered)
+    {
+        UpdateLinkStatus(stats);
+        Draw_Biz();
+        return;
+    }
+
+    /* 节流：200ms */
     static uint32_t last_tick = 0;
     uint32_t now = HAL_GetTick();
-    uint32_t interval = (s_image_ui_step > IMG_UI_NONE && s_image_ui_step < IMG_UI_READY) ? 50 : 200;
-    if (now - last_tick < interval)
+    if (now - last_tick < 200)
         return;
     last_tick = now;
 
@@ -1148,13 +1131,12 @@ void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len)
     if (type != ASK_TYPE_GRAPHIC)
     {
         s_image_complete = 0;
+        s_image_rendered = 0;
         s_image_total_frames = 0;
         s_image_shape = 0xFF;
         memset(s_image_rx_mask, 0, sizeof(s_image_rx_mask));
         s_image_rx_count = 0;
-        s_image_ui_step = IMG_UI_NONE;
         s_image_last_bar_w = 0;
-        s_image_progress_dirty = 0;
         s_biz_updated = 1;
     }
     else
@@ -1164,21 +1146,16 @@ void LCDDisplay_OnFrame(uint8_t type, const uint8_t *payload, uint8_t len)
 
         if (s_image_complete)
         {
-            /* 图像接收完成：触发全屏渲染 */
-            s_biz_updated = 1;
-            s_image_progress_dirty = 0;
+            /* 图像接收完成：立即渲染，不需等进度条 */
+            s_image_rendered = 0;
         }
-        else if (s_image_total_frames > 0 && s_biz_len == 65 &&
-                 s_biz_payload[0] != 0xFE && s_biz_payload[0] < IMAGE_FRAMES_MAX)
+        else if (s_image_total_frames > 0)
         {
-            /* 图像数据帧：只标记进度脏，不触发全内容区刷新
-             * 避免 Draw_BizContent 的 Lcd_fill(0,48,128,112) 阻塞帧接收 */
-            s_image_progress_dirty = 1;
+            /* 图像接收中：进度条由 Draw_Biz 节流刷新，这里不做任何LCD操作 */
         }
         else
         {
-            /* 几何图样或头帧：重置UI状态，触发内容刷新 */
-            s_image_ui_step = IMG_UI_NONE;
+            /* 几何图样或头帧：触发内容刷新 */
             s_image_last_bar_w = 0;
             s_biz_updated = 1;
         }
@@ -1216,6 +1193,7 @@ void LCDDisplay_Process(void)
         {
             s_mode = (s_mode == MODE_BIZ) ? MODE_DBG : MODE_BIZ;
             s_image_complete = 0;  /* 切换模式时清除图像全屏 */
+            s_image_rendered = 0;
             s_force_redraw = 1;
         }
     }
@@ -1237,4 +1215,9 @@ void LCDDisplay_Process(void)
         s_force_redraw = 1;
     }
     last_btn1 = btn1;
+}
+
+void LCDDisplay_SetYieldFn(LcdYieldFn fn)
+{
+    s_yield_fn = fn;
 }

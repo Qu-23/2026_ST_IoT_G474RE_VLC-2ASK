@@ -65,6 +65,20 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/* Yield回调：LCD渲染期间调用，处理挂起的帧，防止丢帧 */
+static void RxYield(void)
+{
+  SignalStats_t ystats;
+  SignalProcessor_GetStats(&ystats);
+  if (ystats.frame_ready)
+  {
+    RxFrame_t yframe;
+    SignalProcessor_GetFrame(&yframe);
+    if (yframe.crc_ok)
+      LCDDisplay_OnFrame(yframe.type, yframe.payload, yframe.len);
+  }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -109,6 +123,7 @@ int main(void)
   SPI_Flash_init();   /* W25Q16 on SPI3 (PA15 CS) - 外部Flash字库 */
   SignalProcessor_Init();
   LCDDisplay_Init();
+  LCDDisplay_SetYieldFn(RxYield);  /* 注册yield回调，LCD渲染期间处理挂起帧 */
 
   /* Start TIM3 to trigger ADC - Begin receiving */
   HAL_TIM_Base_Start(&htim3);
